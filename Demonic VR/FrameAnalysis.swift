@@ -321,8 +321,8 @@ nonisolated enum SourcePolicy {
     /// Hinweis, der für YouTube bestätigt werden muss.
     static let youtubeAcknowledgement = """
     Experimentell: Die Wiedergabe läuft weiter im YouTube-Player der WebView (mit dessen Werbung, \
-    Bedienelementen und dem einzigen Audiopfad). Cardboard zeigt nur Bildschirm-Snapshots dieser \
-    Ansicht für die private Betrachtung. Es werden keine Stream-URLs gelesen, nichts gespeichert \
+    Bedienelementen und dem einzigen Audiopfad). VR/Cardboard zeigt diese Ansicht nur als \
+    gespiegelte Ebene bzw. als Bildschirm-Snapshot für die private Betrachtung. Es werden keine Stream-URLs gelesen, nichts gespeichert \
     und kein Kopierschutz umgangen. Ich nutze YouTube gemäß den YouTube-Nutzungsbedingungen.
     """
 

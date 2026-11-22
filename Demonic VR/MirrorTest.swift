@@ -210,10 +210,11 @@ final class MirrorTestSession {
 
     var currentRun: MirrorTestRun? { runs.last }
 
-    func begin(source: FrameSourceKind, calibration: CalibrationSettings, status: PlaybackStatus, webViewSize: CGSize?) {
+    func begin(source: FrameSourceKind, mode runMode: MirrorDisplayMode? = nil,
+               calibration: CalibrationSettings, status: PlaybackStatus, webViewSize: CGSize?) {
         runs.append(MirrorTestRun(startedAt: Date(),
                                   source: source,
-                                  mode: mode,
+                                  mode: runMode ?? mode,
                                   calibration: calibration,
                                   webViewSize: webViewSize,
                                   videoNaturalSize: status.videoSize,

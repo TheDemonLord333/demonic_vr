@@ -345,6 +345,8 @@ final class PlayerController: NSObject {
     nonisolated enum PlaybackCommand: Equatable, Sendable {
         case toggle
         case seek(seconds: Double)
+        /// Anhalten und an den Anfang zurück (wie „Stopp“ an einem Player).
+        case stop
     }
 
     /// Ergebnis des letzten Befehls: "playing", "paused", "seeked" oder "none".
@@ -365,6 +367,7 @@ final class PlayerController: NSObject {
         let action: String
         switch command {
         case .toggle: action = "toggle"
+        case .stop: action = "stop"
         case .seek(let seconds): action = "seek:" + String(format: "%.1f", seconds.isFinite ? seconds : 0)
         }
         return """
@@ -375,6 +378,7 @@ final class PlayerController: NSObject {
               if (p.getPlayerState() === 1) { p.pauseVideo(); return 'paused'; }
               p.playVideo(); return 'playing';
             }
+            if (action === 'stop') { p.pauseVideo(); p.seekTo(0, true); return 'stopped'; }
             var d = parseFloat(action.split(':')[1]) || 0;
             p.seekTo(Math.max(0, p.getCurrentTime() + d), true); return 'seeked';
           }
@@ -388,6 +392,7 @@ final class PlayerController: NSObject {
             if (best.paused) { best.play(); return 'playing'; }
             best.pause(); return 'paused';
           }
+          if (action === 'stop') { best.pause(); best.currentTime = 0; return 'stopped'; }
           var delta = parseFloat(action.split(':')[1]) || 0;
           best.currentTime = Math.max(0, best.currentTime + delta); return 'seeked';
         })('\(action)');

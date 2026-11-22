@@ -62,6 +62,39 @@ Neu erzeugen (zum Beispiel mit Python/Pillow):
 python3 -c "from PIL import Image; Image.open('Obsidian horned VR headset.png').convert('RGB').resize((1024,1024), Image.LANCZOS).save('Demonic VR/Assets.xcassets/AppIcon.appiconset/AppIcon.png')"
 ```
 
+## Bedienung
+
+**Hauptseite (Standard):**
+
+- **„In VR ansehen“** (großer grüner Knopf oben) startet direkt die auf dem
+  iPhone getestete Konfiguration: zwei Replikate nebeneinander, Original
+  verborgen. Dieselbe WebView, derselbe Player und Ton laufen weiter; im
+  Spiegeltest muss vorher nichts eingestellt werden.
+  - Beim ersten YouTube-Start werden die YouTube-Hinweise einmal bestätigt
+    (gespeichert, widerrufbar in den Einstellungen).
+  - Ohne erkanntes Video erklärt ein Hinweis, was fehlt. Ein pausiertes Video
+    darf gestartet werden.
+  - In VR: Bedienleiste mit Zurück, −10 s, Wiedergabe/Pause, Stopp, +10 s,
+    Kalibrierung und Ausblenden. Die Brillentaste schaltet Wiedergabe/Pause.
+    Die Testhilfen (Hälften-Beschriftung, Beobachtung, Diagnose) erscheinen nur
+    im Spiegeltest oder mit Entwickleroptionen.
+- Linkfeld mit Einfügen/Öffnen, darunter kompakt **YouTube**, **Zurück** und
+  **Playlists**.
+- Menü **„…“** oben rechts: **Einstellungen**, „Links im IFrame-Player
+  öffnen“, „Neu laden“.
+
+**Einstellungen:**
+
+- Kalibrierung (Leinwandgröße, Abstand, Position, Ausschnitt).
+- Wiedergabe: IFrame-Player, Bestätigung der YouTube-Hinweise.
+- Schalter **„Entwickleroptionen auf Hauptseite anzeigen“**: blendet die
+  Entwicklerknöpfe (Spiegeltest, Diagnose, Referenz, Snapshot-Cardboard,
+  Kalibrierung) und die technische Statusleiste unten ein oder aus. Es ändert
+  sich nur das Layout; die WebView bleibt dieselbe und wird nicht neu geladen.
+- **Entwicklung & Diagnose:** Spiegeltest (Original-/Replikat-Auswahl,
+  Seitenwechsel, Beobachtungen, Diagnosebericht), lokales Testvideo,
+  Snapshot-Diagnose, Snapshot-Cardboard-Prüfung, Referenzszene.
+
 ## Funktionen
 
 ### YouTube-Wiedergabe
