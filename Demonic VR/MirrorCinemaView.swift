@@ -76,6 +76,7 @@ nonisolated enum MirrorDisplayMode: String, CaseIterable, Identifiable, Codable,
         case .originalLeft: return "Replikat (CAReplicatorLayer)"
         case .originalRight: return "Original-WebView"
         case .originalOnly: return "leer (kein Replikat)"
+        case .twoReplicas: return "Replikat 2 (Instanz 2, zuletzt gezeichnet)" // oben bereits behandelt
         }
     }
 }
