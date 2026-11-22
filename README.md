@@ -1,0 +1,243 @@
+# Demonic VR
+
+**Demonic VR** spielt YouTube auf dem iPhone ab und zeigt das Bild für eine
+Cardboard-Brille als flache Kinoleinwand im Querformat – mit demselben Bild für
+beide Augen.
+
+- Bundle-ID: `me.thedemonlord333.Demonic-VR`, automatisches Signing
+- Deployment Target: iOS 26.2, Swift / SwiftUI
+- Zielgerät: iPhone 17 Pro
+
+## Start
+
+1. `Demonic VR.xcodeproj` in der Repo-Wurzel mit Xcode öffnen.
+2. Scheme **Demonic VR** wählen (prüfen mit
+   `xcodebuild -list -project "Demonic VR.xcodeproj"`).
+3. Unter *Signing & Capabilities* das eigene Team wählen, falls nötig.
+4. iPhone 17 Pro (Gerät oder Simulator) wählen und starten.
+
+Alle Quelltexte liegen in `Demonic VR/`. Der Ordner ist eine Xcode-Gruppe, die
+mit dem Dateisystem synchronisiert wird. Jede `.swift`-Datei darin wird
+automatisch vom App-Target kompiliert, ein Eintrag in der `project.pbxproj` ist
+dafür nicht nötig.
+
+| Datei | Inhalt |
+| --- | --- |
+| `Demonic_VRApp.swift` | `@main`-Einstieg, App-Delegate (Querformat-Sperre, Audio-Session) |
+| `ContentView.swift` | Startansicht: WebView, Link-Eingabe, Navigation, Fehler-Banner |
+| `PlayerController.swift` | Die **eine** persistente `WKWebView`, Navigation, Status-Skript, Fehlerbehandlung |
+| `EmbedPlayerPage.swift` | Optionaler offizieller YouTube-IFrame-Player |
+| `YouTubeLink.swift` | Erkennung von YouTube-Links |
+| `SnapshotEngine.swift` | WebKit-Snapshots (`takeSnapshot(with:)`), höchstens ein Aufruf gleichzeitig |
+| `FrameAnalysis.swift` | Erkennung neuer, wiederholter und schwarzer Frames, Statistik, Freigabe-Logik |
+| `ReferenceScene.swift` | Animierte lokale Referenzszene mit Framezähler |
+| `CardboardView.swift` | Stereo-Leinwand (beide Augen in einem Canvas-Durchgang aus demselben Frame) |
+| `StereoLayout.swift` | Geometrie: Leinwandgröße, Abstand, vertikale Position, Ausschnitt |
+| `Calibration.swift`, `CalibrationView.swift` | Kalibrierung, gespeichert in `UserDefaults` |
+| `DiagnosticsView.swift` | Einzelbild- und Live-Test, Cardboard-Freigabe |
+| `GoogleAccount.swift`, `PlaylistsView.swift` | Optionale Playlist-Ansicht (Google-OAuth + YouTube Data API) |
+
+Der sichtbare Name ist auf dem Home-Bildschirm und in der App „Demonic VR“
+(`INFOPLIST_KEY_CFBundleDisplayName`).
+
+## App-Icon
+
+- Quelle: `Obsidian horned VR headset.png` in der Repo-Wurzel (bleibt dort).
+  Die Datei hat 1254 × 1254 px, RGB und keinen Alphakanal.
+- Aufbereitet als `Demonic VR/Assets.xcassets/AppIcon.appiconset/AppIcon.png`:
+  1024 × 1024 px, RGB ohne Alphakanal, auf das ganze Bild skaliert (Lanczos).
+  Das vollständige Motiv und die eckige Bildfläche bleiben erhalten, die
+  Rundung macht iOS.
+- In `AppIcon.appiconset/Contents.json` beim universellen iOS-Standardeintrag
+  (`1024x1024`, ohne Appearance) eingetragen. Das App-Target verweist über
+  `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` auf das Set. Für die Varianten
+  „dark“ und „tinted“ ist bewusst nichts hinterlegt, iOS leitet sie ab.
+
+Neu erzeugen (zum Beispiel mit Python/Pillow):
+
+```sh
+python3 -c "from PIL import Image; Image.open('Obsidian horned VR headset.png').convert('RGB').resize((1024,1024), Image.LANCZOS).save('Demonic VR/Assets.xcassets/AppIcon.appiconset/AppIcon.png')"
+```
+
+## Funktionen
+
+### YouTube-Wiedergabe
+
+- Es gibt genau **eine** `WKWebView`. Sie wird im `PlayerController` einmal
+  erzeugt und hängt dauerhaft in der Startansicht. Cardboard, Diagnose und
+  Kalibrierung legen sich als Ebene oder Sheet darüber. So bleiben Sitzung,
+  Cookies, Wiedergabe, Position und der einzige Audiopfad bei jedem Wechsel
+  erhalten.
+- Die normale mobile YouTube-Ansicht (`m.youtube.com`) startet automatisch.
+  Für die Grundfunktionen ist keine Google-Anmeldung nötig.
+- Inline-Wiedergabe: `allowsInlineMediaPlayback = true`, kein Benutzer-Tap für
+  Medien nötig. Bild-in-Bild und AirPlay sind aus, damit es bei einem Player
+  bleibt.
+- **Link einfügen:** Über das Textfeld oder den Einfügen-Button. Erkannt werden
+  `watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`, Startzeiten (`t=`)
+  und Playlists. Links öffnen standardmäßig in der normalen YouTube-Ansicht.
+  Optional (Menü „…“) öffnen sie im offiziellen IFrame-Player.
+- **Klarer Rückweg:** Bei ungültigen Links, Ladefehlern, beendetem Web-Prozess
+  oder IFrame-Fehlern (2, 5, 100, 101/150, 152/153) erscheint ein Banner. Es
+  bietet „In YouTube-Ansicht öffnen“, „Zur YouTube-Startseite“, „Erneut
+  versuchen“ oder „Schließen“.
+- Die Statuszeile zeigt Quelle, Position und WebView-Kennung. Nach dem
+  Verlassen von Cardboard steht dort auch der Sitzungsvergleich vorher/nachher:
+  gleiche WebView, gleiche Seite, Position nicht zurückgesetzt.
+
+### IFrame-API (optional)
+
+Der IFrame-Player nutzt nur dokumentierte Parameter und Ereignisse:
+`playsinline`, `start`, `rel`, `origin`, `onReady`, `onStateChange`,
+`onError`, `getCurrentTime`, `getDuration` und `getPlayerState`. Die
+YouTube-Bedienelemente und das Branding bleiben sichtbar, `controls` wird nicht
+abgeschaltet. Als Origin und Referrer dient `https://me.thedemonlord333.demonic-vr`,
+also die Bundle-ID, wie es YouTube für App-WebViews verlangt. Weil der
+IFrame-Player laut YouTube-API-Richtlinien nicht verdeckt werden darf, ist
+**Cardboard für den IFrame-Player gesperrt**. Für Cardboard das Video in der
+normalen YouTube-Ansicht öffnen.
+
+### Cardboard-Modus
+
+- Querformat wird erzwungen, Statusleiste und Home-Indikator sind ausgeblendet,
+  der Bildschirm bleibt an.
+- Beide Augenhälften zeigen denselben zugeschnittenen Frame aus derselben
+  Quelle, mit korrektem Seitenverhältnis und symmetrisch zur Mitte. Beide Augen
+  werden in **einem** `Canvas`-Durchgang aus demselben `VideoFrame`-Objekt
+  gezeichnet. Bei Pufferung oder Aussetzern bleibt in beiden Augen derselbe
+  letzte Frame stehen. Unter jeder Leinwand steht dieselbe Framenummer.
+- **Kalibrierung** (in der Brille über „Kalibrierung“ oder von der
+  Startansicht aus): Leinwandgröße, horizontaler Abstand, vertikale Position und
+  ein manueller Ausschnitt (links/oben/Breite/Höhe). Die Werte werden sofort in
+  `UserDefaults` gespeichert (`demonicvr.calibration.v1`). „Auf Standard
+  zurücksetzen“ löscht sie.
+- **Referenzszene:** Eine animierte lokale 16:9-Szene mit Framezähler, Raster,
+  Eckmarken, bewegter Kugel und einer 60-Felder-Frameleiste. Damit lassen sich
+  Ausschnitt und Synchronität ohne YouTube prüfen. Mit „Aussetzer“ werden
+  Pufferpausen simuliert.
+
+### Snapshot-Diagnose
+
+Erreichbar über „Diagnose“, auch aus Cardboard und aus dem Problem-Hinweis.
+
+- **Einzelbildtest** und **Live-Test (10 s)** für die YouTube-WebView über die
+  öffentliche API `WKWebView.takeSnapshot(with:completionHandler:)`. Gleiche
+  Tests gibt es für die Referenzszene.
+- Angezeigt werden: Vorschau (mit Ausschnittsrahmen und Stereo-Vorschau),
+  Snapshot-Dauer (letzte, Durchschnitt, Maximum), gelieferte und tatsächlich
+  neue Frames pro Sekunde (gesamt und gleitend), wiederholte und schwarze
+  Frames, Fehler, die Höchstzahl gleichzeitig offener Snapshots und der
+  erfasste Bereich.
+- Erfasst wird nur der sichtbare Video-Bildbereich: Element-Rechteck ohne
+  Letterbox, ermittelt über `getBoundingClientRect` und `videoWidth`/`videoHeight`.
+  „Bewegung im Ausschnitt erkannt“ zeigt an, ob sich der Bereich wirklich ändert.
+- Es ist höchstens ein Snapshot-Aufruf gleichzeitig offen: Die Aufrufe laufen
+  nacheinander, zusätzlich verhindert ein Zähler Überschneidungen. Die Rate ist
+  auf höchstens 30/s begrenzt.
+- Die Aufnahme endet beim Schließen der Diagnose, beim Verlassen von Cardboard,
+  bei `willResignActive`/`didEnterBackground` und bei Szenenwechseln.
+
+### YouTube in Cardboard ist experimentell
+
+Cardboard für YouTube wird erst freigegeben, wenn
+
+1. die Quelle die normale YouTube-Ansicht ist (nicht der IFrame-Player und
+   keine fremde Seite),
+2. die Hinweise bestätigt sind: Wiedergabe, Werbung, Bedienelemente und Ton
+   bleiben im YouTube-Player, Cardboard zeigt nur Snapshots für die private
+   Betrachtung, und
+3. ein Live-Test laufend nutzbare Frames liefert: mindestens 8 neue Frames/s,
+   höchstens 50 % schwarze Frames, kein Stillstand über 1,5 s und Messdauer
+   mindestens 2 s.
+
+Während Cardboard läuft, wird das Bild weiter überwacht. Wird es schwarz oder
+friert es ein, erscheint ein Hinweis mit „Diagnose“ und „Zurück zum Player“.
+„Zurück zum Player“ ist in der Bedienleiste immer erreichbar (Tippen blendet sie
+ein).
+
+Es werden **keine privaten APIs** verwendet, **keine Stream-URLs** gelesen und
+**kein Kopierschutz** umgangen. Das injizierte Skript liest nur Position, Größe
+und Abspielzeit des sichtbaren `<video>`-Elements. Liefert WebKit für das Video
+nur schwarze oder eingefrorene Bilder, etwa weil die Videoebene hardwareseitig
+oder geschützt gerendert wird, bleibt Cardboard für YouTube gesperrt.
+
+### Optionale Playlist-Ansicht
+
+Die Playlist-Ansicht nutzt den offiziellen Google-OAuth-2.0-Ablauf für native
+Apps (Autorisierungscode mit PKCE) über `ASWebAuthenticationSession`, ganz
+getrennt von der WebView-Sitzung. Dazu kommt die YouTube Data API v3
+(`playlists?mine=true`, `playlistItems`). Tokens liegen nur im Arbeitsspeicher.
+
+Einrichtung:
+
+1. In der Google Cloud Console die **YouTube Data API v3** aktivieren.
+2. Einen OAuth-Zustimmungsbildschirm anlegen (Scope `youtube.readonly`).
+3. Eine **OAuth-Client-ID vom Typ „iOS“** für die Bundle-ID
+   `me.thedemonlord333.Demonic-VR` anlegen.
+4. `Config/GoogleOAuth.example.plist` nach `Demonic VR/GoogleOAuth.plist`
+   kopieren und `CLIENT_ID` eintragen. Die Datei steht in `.gitignore` und
+   **darf nicht committet werden**. Als Redirect dient die umgekehrte
+   Client-ID (`com.googleusercontent.apps.…:/oauth2redirect`).
+
+Ohne diese Datei zeigt die Playlist-Ansicht nur die Anleitung, der Rest der App
+funktioniert normal.
+
+## Tests
+
+### Automatisch (Xcode, Simulator oder Gerät)
+
+```sh
+xcodebuild -list -project "Demonic VR.xcodeproj"
+xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
+  -destination "platform=iOS Simulator,name=iPhone 17 Pro"
+```
+
+- `Demonic VRTests`: Link-Erkennung, Rückweg bei ungültigen Links und
+  IFrame-Fehlern, eine WebView über Ansichtswechsel, Stereo-Layout
+  (Symmetrie, Seitenverhältnis, Abstand, vertikale Position), Letterbox,
+  Ausschnitt, Speichern/Laden/Zurücksetzen der Kalibrierung, Erkennung neuer,
+  wiederholter und schwarzer Frames, Statistik, Freigabe-Logik, Quellenregeln,
+  Referenzszene, PKCE und OAuth-Redirect.
+- `Demonic VRUITests`: Start mit dem Namen „Demonic VR“, Referenzszene im
+  Querformat mit laufendem Framezähler und Rückkehr zum Player, Kalibrierung
+  und Zurücksetzen, ungültiger Link mit Rückweg, Live-Test der Referenzszene
+  mit erkannter Bewegung, gesperrte YouTube-Freigabe ohne Quelle,
+  Launch-Performance. UI-Tests starten mit `-DemonicUITest`, ohne Netzwerk und
+  mit eigener `UserDefaults`-Suite.
+
+### Manuell auf dem iPhone 17 Pro
+
+1. **Name und Icon:** Auf dem Home-Bildschirm stehen „Demonic VR“ und das
+   Headset-Icon.
+2. **Referenzszene:** „Referenz“ antippen. Die App dreht ins Querformat, beide
+   Augen zeigen dieselbe Framenummer und dasselbe Feld der Frameleiste. Mit
+   „Aussetzer“ bleibt in beiden Augen derselbe Frame stehen. In der Brille
+   Leinwandgröße, Abstand und vertikale Position einstellen, die App neu
+   starten und prüfen, ob die Werte erhalten bleiben. Dann zurücksetzen.
+3. **YouTube:** Ein Video in der YouTube-Ansicht starten und einen Link
+   einfügen, zum Beispiel `https://youtu.be/<ID>`. Die Wiedergabe läuft inline.
+4. **Diagnose:** „Diagnose“ → Quelle „YouTube-WebView“ → Einzelbildtest, dann
+   Live-Test. Die Vorschau muss das Videobild zeigen (nicht schwarz), „neu“ muss
+   deutlich über 0 fps liegen und „Bewegung im Ausschnitt erkannt“ erscheinen.
+   Gleichzeitig offene Snapshots müssen 1 bleiben.
+5. **Cardboard-Freigabe:** „Cardboard β“ → Hinweise bestätigen → Prüfung
+   abwarten → „Cardboard starten“. Ton und Bild müssen weiterlaufen.
+6. **Rückkehr:** „Zurück zum Player“. Die Statuszeile meldet „WebView gleich ·
+   Seite gleich · Position x → y“ mit y ≥ x, und das Video läuft ohne Neuladen
+   weiter. Ein ungültiger Link zeigt das Banner mit Rückweg.
+7. **Hintergrund:** In Cardboard oder während eines Live-Tests die App in den
+   Hintergrund schicken. Die Aufnahme stoppt, im Diagnose-Status steht „Bereit“.
+8. **Schwarzes oder eingefrorenes Bild:** Liefert YouTube in Cardboard keine
+   Frames, erscheint der Hinweis mit „Diagnose“ und „Zurück zum Player“, und
+   beides funktioniert.
+
+## Stand der Prüfung
+
+Implementiert wurde der Code in einer Linux-Umgebung ohne macOS, Xcode und
+iPhone. Ein Swift-Compiler war dort nicht verfügbar. Deshalb sind noch **nicht**
+gelaufen: der Build, `xcodebuild -list`, die Unit- und UI-Tests sowie alle
+Prüfungen auf dem Gerät (Schritte 1–8 oben). Geprüft wurden das App-Icon
+(1024 × 1024, RGB ohne Alpha, Motiv vollständig), sein Eintrag in
+`Contents.json` und der PKCE-Testvektor (RFC 7636). Ob WebKit-Snapshots für
+YouTube-Videos auf dem iPhone 17 Pro wirklich Bildinhalt liefern, lässt sich nur
+auf dem Gerät klären. Genau dafür gibt es Diagnose und Freigabe.

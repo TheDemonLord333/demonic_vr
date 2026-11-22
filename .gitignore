@@ -1,0 +1,9 @@
+# Xcode
+DerivedData/
+build/
+*.xcresult
+xcuserdata/
+.DS_Store
+
+# Zugangsdaten für die optionale Playlist-Ansicht (siehe README)
+Demonic VR/GoogleOAuth.plist

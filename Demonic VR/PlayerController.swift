@@ -1,0 +1,506 @@
+//
+//  PlayerController.swift
+//  Demonic VR
+//
+//  Besitzt die einzige, persistente WKWebView der App. Sie wird einmal
+//  erzeugt, nie neu angelegt und nie aus der View-Hierarchie entfernt.
+//  Damit bleiben Sitzung, Wiedergabe, Position und Audio bei jedem
+//  Ansichtswechsel erhalten.
+//
+
+import Foundation
+import Observation
+import UIKit
+import WebKit
+
+nonisolated enum PlayerPageKind: Equatable, Sendable {
+    case blank
+    case youtubeSite
+    case embed(videoID: String)
+    case other
+}
+
+nonisolated struct PlaybackStatus: Equatable, Sendable {
+    var hasVideo = false
+    var currentTime: Double = 0
+    var duration: Double = 0
+    var isPaused = true
+    var readyState = 0
+    var elementRect: CGRect = .zero
+    var videoSize: CGSize = .zero
+    var updatedAt: Date = .distantPast
+
+    var contentRect: CGRect {
+        VideoGeometry.contentRect(element: elementRect, videoSize: videoSize)
+    }
+}
+
+nonisolated struct CaptureRegion: Equatable, Sendable {
+    enum Source: String, Sendable {
+        case videoElement = "Video-Element"
+        case embedPlayer = "IFrame-Player"
+        case wholeView = "Gesamte WebView"
+    }
+    var rect: CGRect
+    var source: Source
+}
+
+nonisolated struct PlayerIssue: Identifiable, Equatable, Sendable {
+    enum Action: Equatable, Sendable {
+        case openOnYouTube(URL)
+        case goHome
+        case retry
+        case dismiss
+
+        var title: String {
+            switch self {
+            case .openOnYouTube: return "In YouTube-Ansicht öffnen"
+            case .goHome: return "Zur YouTube-Startseite"
+            case .retry: return "Erneut versuchen"
+            case .dismiss: return "Schließen"
+            }
+        }
+
+        var identifier: String {
+            switch self {
+            case .openOnYouTube: return "issue.openOnYouTube"
+            case .goHome: return "issue.home"
+            case .retry: return "issue.retry"
+            case .dismiss: return "issue.dismiss"
+            }
+        }
+    }
+
+    let id = UUID()
+    var title: String
+    var message: String
+    var actions: [Action]
+}
+
+/// Momentaufnahme für die Prüfung „gleiche Sitzung nach Ansichtswechsel“.
+nonisolated struct ContinuityMark: Equatable, Sendable {
+    var webViewID: ObjectIdentifier
+    var url: URL?
+    var currentTime: Double
+    var isPaused: Bool
+    var hasVideo: Bool
+    var date: Date
+}
+
+nonisolated struct ContinuityReport: Equatable, Sendable {
+    var before: ContinuityMark
+    var after: ContinuityMark
+
+    var sameWebView: Bool { before.webViewID == after.webViewID }
+    var sameURL: Bool { Self.normalized(before.url) == Self.normalized(after.url) }
+
+    /// Wiedergabe wurde nicht auf 0 zurückgesetzt und ist (falls sie lief) weitergelaufen.
+    var positionPreserved: Bool {
+        guard before.hasVideo else { return true }
+        guard after.hasVideo else { return false }
+        if before.currentTime < 1 { return true }
+        return after.currentTime >= before.currentTime - 1.0
+    }
+
+    var isContinuous: Bool { sameWebView && sameURL && positionPreserved }
+
+    var summary: String {
+        let position = before.hasVideo
+            ? "\(TimeFormatter.clock(before.currentTime)) → \(TimeFormatter.clock(after.currentTime))"
+            : "kein Video"
+        return "WebView \(sameWebView ? "gleich" : "NEU") · Seite \(sameURL ? "gleich" : "geändert") · Position \(position)"
+    }
+
+    private static func normalized(_ url: URL?) -> String {
+        guard let url, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "" }
+        components.queryItems = components.queryItems?.filter { $0.name != "t" }
+        components.fragment = nil
+        return components.string ?? url.absoluteString
+    }
+}
+
+nonisolated enum TimeFormatter {
+    static func clock(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "--:--" }
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+}
+
+@Observable
+final class PlayerController: NSObject {
+    static let homeURL = URL(string: "https://m.youtube.com/")!
+    /// Herkunft der lokalen IFrame-Seite: https://<Bundle-ID>, wie von YouTube für App-WebViews empfohlen.
+    static let embedOrigin = URL(string: "https://me.thedemonlord333.demonic-vr/")!
+    nonisolated static let messageHandlerName = "demonic"
+    private static let preferEmbedKey = "demonicvr.preferEmbedPlayer"
+
+    @ObservationIgnored let webView: WKWebView
+    @ObservationIgnored private let startURL: URL?
+    @ObservationIgnored private var observations: [NSKeyValueObservation] = []
+    @ObservationIgnored private var embedVideoID: String?
+    @ObservationIgnored private var lastRequestedURL: URL?
+
+    private(set) var pageKind: PlayerPageKind = .blank
+    private(set) var currentURL: URL?
+    private(set) var title = ""
+    private(set) var isLoading = false
+    private(set) var canGoBack = false
+    private(set) var status = PlaybackStatus()
+    var issue: PlayerIssue?
+    /// Eingefügte Video-Links im offiziellen IFrame-Player statt in der YouTube-Ansicht öffnen.
+    private(set) var preferEmbedPlayer: Bool
+
+    func setPreferEmbedPlayer(_ value: Bool) {
+        preferEmbedPlayer = value
+        UserDefaults.standard.set(value, forKey: Self.preferEmbedKey)
+    }
+
+    var webViewID: ObjectIdentifier { ObjectIdentifier(webView) }
+
+    var webViewShortID: String {
+        String(UInt(bitPattern: ObjectIdentifier(webView).hashValue) & 0xFFFFFF, radix: 16, uppercase: true)
+    }
+
+    var sourceKind: FrameSourceKind {
+        switch pageKind {
+        case .youtubeSite: return .youtubeSite
+        case .embed: return .youtubeEmbed
+        case .other: return .otherWeb
+        case .blank: return .none
+        }
+    }
+
+    /// - Parameter startURL: Erste Seite. `nil` lädt nichts (UI-Tests ohne Netzwerk).
+    init(startURL: URL? = PlayerController.homeURL) {
+        let configuration = WKWebViewConfiguration()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.allowsPictureInPictureMediaPlayback = false
+        configuration.allowsAirPlayForMediaPlayback = false
+        configuration.websiteDataStore = .default()
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
+
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 600), configuration: configuration)
+        webView.isOpaque = false
+        webView.backgroundColor = .black
+        webView.scrollView.backgroundColor = .black
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.allowsBackForwardNavigationGestures = true
+        webView.accessibilityIdentifier = "player.webview"
+
+        self.webView = webView
+        self.startURL = startURL
+        self.preferEmbedPlayer = UserDefaults.standard.bool(forKey: Self.preferEmbedKey)
+        super.init()
+
+        let controller = webView.configuration.userContentController
+        controller.add(ScriptMessageProxy(target: self), name: Self.messageHandlerName)
+        controller.addUserScript(WKUserScript(source: Self.statusScript,
+                                              injectionTime: .atDocumentEnd,
+                                              forMainFrameOnly: true))
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        observeWebView()
+
+        if let startURL {
+            load(startURL)
+        }
+    }
+
+    // MARK: - Navigation
+
+    func goHome() {
+        issue = nil
+        load(startURL ?? Self.homeURL)
+    }
+
+    func goBack() {
+        if webView.canGoBack { webView.goBack() }
+    }
+
+    func reload() {
+        issue = nil
+        if webView.url == nil, let lastRequestedURL {
+            load(lastRequestedURL)
+        } else {
+            webView.reload()
+        }
+    }
+
+    /// Öffnet eingefügten Text als YouTube-Link. Gibt `false` zurück, wenn er nicht erkannt wurde.
+    @discardableResult
+    func open(input: String) -> Bool {
+        guard let link = YouTubeLink.parse(input) else {
+            issue = PlayerIssue(
+                title: "Kein abspielbarer YouTube-Link",
+                message: "„\(input.prefix(80))“ wurde nicht als YouTube-Video, Playlist oder YouTube-Seite erkannt. Unterstützt: youtube.com/watch?v=…, youtu.be/…, /shorts/…, /live/…, Playlists.",
+                actions: [.dismiss, .goHome]
+            )
+            return false
+        }
+        open(link)
+        return true
+    }
+
+    func open(_ link: YouTubeLink) {
+        issue = nil
+        if preferEmbedPlayer, let id = link.videoID {
+            loadEmbed(videoID: id, start: link.startSeconds ?? 0)
+        } else {
+            load(link.siteURL)
+        }
+    }
+
+    private func load(_ url: URL) {
+        lastRequestedURL = url
+        embedVideoID = nil
+        webView.load(URLRequest(url: url))
+    }
+
+    func loadEmbed(videoID: String, start: Int) {
+        guard YouTubeLink.isValidVideoID(videoID) else { return }
+        embedVideoID = videoID
+        lastRequestedURL = YouTubeLink.video(id: videoID, start: start).siteURL
+        webView.loadHTMLString(EmbedPlayerPage.html(videoID: videoID, start: start, origin: Self.embedOrigin),
+                               baseURL: Self.embedOrigin)
+    }
+
+    func perform(_ action: PlayerIssue.Action) {
+        switch action {
+        case .openOnYouTube(let url):
+            issue = nil
+            load(url)
+        case .goHome:
+            goHome()
+        case .retry:
+            reload()
+        case .dismiss:
+            issue = nil
+        }
+    }
+
+    // MARK: - Snapshot-Bereich und Sitzung
+
+    /// Bereich der WebView, der für Snapshots aufgenommen wird (in View-Koordinaten).
+    func captureRegion(now: Date = Date()) -> CaptureRegion? {
+        let bounds = webView.bounds
+        guard bounds.width > 1, bounds.height > 1 else { return nil }
+        if status.hasVideo, now.timeIntervalSince(status.updatedAt) < 3 {
+            let rect = status.contentRect.intersection(bounds)
+            if !rect.isNull, rect.width >= 16, rect.height >= 16 {
+                let source: CaptureRegion.Source
+                if case .embed = pageKind { source = .embedPlayer } else { source = .videoElement }
+                return CaptureRegion(rect: rect.integral.intersection(bounds), source: source)
+            }
+        }
+        return CaptureRegion(rect: bounds, source: .wholeView)
+    }
+
+    func continuityMark() -> ContinuityMark {
+        ContinuityMark(webViewID: webViewID,
+                       url: webView.url,
+                       currentTime: status.currentTime,
+                       isPaused: status.isPaused,
+                       hasVideo: status.hasVideo,
+                       date: Date())
+    }
+
+    // MARK: - Interna
+
+    private func observeWebView() {
+        observations = [
+            webView.observe(\.isLoading, options: [.initial, .new]) { [weak self] webView, _ in
+                MainActor.assumeIsolated { self?.isLoading = webView.isLoading }
+            },
+            webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
+                MainActor.assumeIsolated { self?.title = webView.title ?? "" }
+            },
+            webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] webView, _ in
+                MainActor.assumeIsolated { self?.canGoBack = webView.canGoBack }
+            },
+            webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
+                MainActor.assumeIsolated { self?.urlDidChange(webView.url) }
+            },
+        ]
+    }
+
+    private func urlDidChange(_ url: URL?) {
+        currentURL = url
+        pageKind = Self.classify(url, embedVideoID: embedVideoID)
+        status = PlaybackStatus()
+    }
+
+    static func classify(_ url: URL?, embedVideoID: String?) -> PlayerPageKind {
+        guard let url, let scheme = url.scheme?.lowercased() else { return .blank }
+        if scheme == "about" { return .blank }
+        let host = url.host?.lowercased() ?? ""
+        if host == embedOrigin.host?.lowercased() {
+            return embedVideoID.map { .embed(videoID: $0) } ?? .other
+        }
+        if host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "youtu.be" {
+            return .youtubeSite
+        }
+        return .other
+    }
+
+    fileprivate func handleScriptMessage(_ body: Any) {
+        guard let message = body as? [String: Any], let type = message["type"] as? String else { return }
+        switch type {
+        case "status":
+            var next = PlaybackStatus()
+            next.updatedAt = Date()
+            if let rect = message["rect"] as? [Double], rect.count == 4 {
+                next.hasVideo = rect[2] > 1 && rect[3] > 1
+                next.elementRect = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
+            }
+            next.currentTime = (message["t"] as? Double) ?? 0
+            next.duration = (message["d"] as? Double) ?? 0
+            next.isPaused = (message["paused"] as? Bool) ?? true
+            next.readyState = (message["ready"] as? Int) ?? 0
+            let vw = (message["vw"] as? Double) ?? 0
+            let vh = (message["vh"] as? Double) ?? 0
+            next.videoSize = CGSize(width: vw, height: vh)
+            status = next
+        case "error":
+            let code = (message["code"] as? Int) ?? -1
+            issue = Self.embedIssue(code: code, videoID: embedVideoID)
+        default:
+            break
+        }
+    }
+
+    /// Fehlercodes laut YouTube IFrame Player API (onError).
+    static func embedIssue(code: Int, videoID: String?) -> PlayerIssue {
+        let message: String
+        switch code {
+        case 2: message = "Ungültige Video-ID oder Parameter."
+        case 5: message = "Der HTML5-Player konnte das Video nicht abspielen."
+        case 100: message = "Video nicht gefunden – entfernt oder privat."
+        case 101, 150: message = "Der Rechteinhaber erlaubt keine eingebettete Wiedergabe."
+        case 152, 153: message = "Der eingebettete Player wurde von YouTube abgelehnt (fehlende App-Identität/Referrer)."
+        default: message = "Unbekannter Player-Fehler (\(code))."
+        }
+        var actions: [PlayerIssue.Action] = []
+        if let videoID {
+            actions.append(.openOnYouTube(YouTubeLink.video(id: videoID, start: nil).siteURL))
+        }
+        actions.append(.goHome)
+        return PlayerIssue(title: "Video nicht abspielbar", message: message, actions: actions)
+    }
+
+    private func handleNavigationError(_ error: Error) {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
+        if nsError.domain == "WebKitErrorDomain" && (nsError.code == 102 || nsError.code == 204) { return }
+        issue = PlayerIssue(title: "Seite konnte nicht geladen werden",
+                            message: nsError.localizedDescription,
+                            actions: [.retry, .goHome])
+    }
+
+    /// Liest nur öffentliche DOM-Eigenschaften (Position, Größe) des sichtbaren Videos – keine Stream-URLs.
+    static let statusScript = """
+    (function () {
+      if (window.__demonicStatus) { return; }
+      window.__demonicStatus = true;
+      function post(m) {
+        try { window.webkit.messageHandlers.\(messageHandlerName).postMessage(m); } catch (e) {}
+      }
+      function largestVideo() {
+        var best = null, area = 0;
+        var videos = document.querySelectorAll('video');
+        for (var i = 0; i < videos.length; i++) {
+          var r = videos[i].getBoundingClientRect();
+          var a = Math.max(0, r.width) * Math.max(0, r.height);
+          if (a > area) { area = a; best = videos[i]; }
+        }
+        return best;
+      }
+      function report() {
+        var m = { type: 'status' };
+        if (window.__demonicEmbed) {
+          var frame = document.getElementById('player');
+          var p = window.__demonicPlayer;
+          if (frame) {
+            var fr = frame.getBoundingClientRect();
+            m.rect = [fr.left, fr.top, fr.width, fr.height];
+            m.vw = 16; m.vh = 9;
+          }
+          if (p && typeof p.getCurrentTime === 'function') {
+            m.t = p.getCurrentTime() || 0;
+            m.d = p.getDuration() || 0;
+            m.paused = p.getPlayerState() !== 1;
+            m.ready = 4;
+          }
+        } else {
+          var v = largestVideo();
+          if (v) {
+            var r = v.getBoundingClientRect();
+            m.rect = [r.left, r.top, r.width, r.height];
+            m.t = v.currentTime || 0;
+            m.d = isFinite(v.duration) ? v.duration : 0;
+            m.paused = !!v.paused;
+            m.ready = v.readyState;
+            m.vw = v.videoWidth; m.vh = v.videoHeight;
+          }
+        }
+        post(m);
+      }
+      setInterval(report, 400);
+      report();
+    })();
+    """
+}
+
+// MARK: - WKNavigationDelegate / WKUIDelegate
+
+extension PlayerController: WKNavigationDelegate, WKUIDelegate {
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+        guard let url = navigationAction.request.url, let scheme = url.scheme?.lowercased() else {
+            return .cancel
+        }
+        // App-Links (youtube://, intent:// …) bleiben draußen; alles läuft in derselben WebView.
+        return ["http", "https", "about", "blob", "data"].contains(scheme) ? .allow : .cancel
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
+        handleNavigationError(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+        handleNavigationError(error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        issue = PlayerIssue(title: "Webinhalt wurde beendet",
+                            message: "iOS hat den Web-Prozess beendet. Die Seite kann neu geladen werden.",
+                            actions: [.retry, .goHome])
+    }
+
+    /// Links mit target=_blank in derselben WebView öffnen – es gibt nur eine WebView.
+    func webView(_ webView: WKWebView,
+                 createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+            webView.load(URLRequest(url: url))
+        }
+        return nil
+    }
+}
+
+/// Verhindert den Retain-Zyklus WKUserContentController → Handler → WebView.
+private final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
+    weak var target: PlayerController?
+
+    init(target: PlayerController) {
+        self.target = target
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.handleScriptMessage(message.body)
+    }
+}
