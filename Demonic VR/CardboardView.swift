@@ -20,6 +20,11 @@ struct CardboardView: View {
     @State private var calibrationVisible = false
     @State private var hideTask: Task<Void, Never>?
     @State private var observationVisible = false
+    @State private var playbackFeedback: String?
+    @State private var feedbackTask: Task<Void, Never>?
+
+    /// Quellen mit echter Videowiedergabe in der WebView (Brillentaste = Play/Pause).
+    private var controlsWebVideo: Bool { source != .reference }
 
     private var frame: VideoFrame? {
         switch source {
@@ -61,6 +66,15 @@ struct CardboardView: View {
                     .accessibilityElement()
                     .accessibilityLabel("Stereo-Leinwand, Frame \(frame?.sequence ?? 0)")
                     .accessibilityIdentifier("cardboard.stereo")
+            }
+
+            if controlsWebVideo {
+                // Die Taste der Brille drückt mittig zwischen den Linsen auf den Bildschirm.
+                HeadsetButtonZone { sendPlayback(.toggle) }
+            }
+
+            if let playbackFeedback {
+                PlaybackFeedback(text: playbackFeedback)
             }
 
             if source == .youtube {
@@ -162,6 +176,21 @@ struct CardboardView: View {
 
             Spacer()
 
+            if controlsWebVideo {
+                HStack(spacing: 6) {
+                    Button { sendPlayback(.seek(seconds: -10)) } label: { Image(systemName: "gobackward.10") }
+                        .accessibilityLabel("10 Sekunden zurück")
+                        .accessibilityIdentifier("cardboard.seekBack")
+                    Button { sendPlayback(.toggle) } label: { Image(systemName: "playpause.fill") }
+                        .accessibilityLabel("Wiedergabe/Pause")
+                        .accessibilityIdentifier("cardboard.playPause")
+                    Button { sendPlayback(.seek(seconds: 10)) } label: { Image(systemName: "goforward.10") }
+                        .accessibilityLabel("10 Sekunden vor")
+                        .accessibilityIdentifier("cardboard.seekForward")
+                }
+                .buttonStyle(.bordered)
+            }
+
             if source.isMirror {
                 Button {
                     observationVisible.toggle()
@@ -236,6 +265,26 @@ struct CardboardView: View {
         }
     }
 
+    private func sendPlayback(_ command: PlayerController.PlaybackCommand) {
+        model.player.send(command)
+        feedbackTask?.cancel()
+        switch command {
+        case .toggle: playbackFeedback = "⏯"
+        case .seek(let seconds): playbackFeedback = seconds < 0 ? "−10 s" : "+10 s"
+        }
+        feedbackTask = Task { @MainActor in
+            // Ergebnis der Seite abwarten (Play/Pause), dann ausblenden.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            if case .toggle = command, let result = model.player.lastPlaybackResult {
+                playbackFeedback = result == "paused" ? "Pause" : (result == "playing" ? "Wiedergabe" : "Kein Video")
+            }
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled else { return }
+            playbackFeedback = nil
+        }
+    }
+
     private func toggleControls() {
         withAnimation { controlsVisible.toggle() }
         if controlsVisible { scheduleHide() }
@@ -251,6 +300,57 @@ struct CardboardView: View {
             guard !Task.isCancelled, !calibrationVisible else { return }
             withAnimation { controlsVisible = false }
         }
+    }
+}
+
+/// Tastbereich in der Bildschirmmitte für die mechanische Taste der Cardboard-Brille.
+/// Liegt auf der Trennlinie zwischen den Augen – dort ist im Spiegel-Modus keine WebView.
+struct HeadsetButtonZone: View {
+    let action: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let zone = HeadsetButtonZone.zone(in: proxy.size)
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: zone.width, height: zone.height)
+                .position(x: zone.midX, y: zone.midY)
+                .onTapGesture(perform: action)
+                .accessibilityElement()
+                .accessibilityLabel("Brillentaste: Wiedergabe/Pause")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("cardboard.headsetZone")
+        }
+    }
+
+    nonisolated static let width: CGFloat = 72
+
+    /// Senkrechter Streifen über die volle Höhe, mittig auf der Trennlinie.
+    nonisolated static func zone(in size: CGSize) -> CGRect {
+        let w = min(width, size.width)
+        return CGRect(x: (size.width - w) / 2, y: 0, width: w, height: size.height)
+    }
+}
+
+/// Rückmeldung zur Brillentaste – in BEIDEN Augen gleich angezeigt.
+private struct PlaybackFeedback: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(0..<2, id: \.self) { _ in
+                Text(text)
+                    .font(.title2.bold())
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+        .accessibilityIdentifier("cardboard.playbackFeedback")
     }
 }
 

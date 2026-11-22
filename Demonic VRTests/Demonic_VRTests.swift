@@ -621,3 +621,100 @@ struct MirrorComparisonTests {
         #expect(MirrorDiagnosticReport.assessment(run).contains("Original-Instanz"))
     }
 }
+
+// MARK: - Auswertung des Geräteberichts (zwei Replikate, Seitengröße, Einordnung)
+
+@MainActor
+struct MirrorDeviceFindingsTests {
+    @Test(arguments: [-0.25, 0.0, 0.25])
+    func twoReplicasHideOriginalAndFillBothHalves(_ spacing: Double) throws {
+        var settings = CalibrationSettings.default
+        settings.horizontalSpacing = spacing
+        let view = MirrorCinemaContainer(frame: CGRect(x: 0, y: 0, width: 874, height: 402))
+        view.settings = settings
+        view.mode = .twoReplicas
+        let g = try #require(view.applyLayout(pageSize: CGSize(width: 402, height: 523)))
+        let layout = StereoLayout.compute(container: CGSize(width: 874, height: 402),
+                                          contentAspect: 402.0 / 523.0, settings: settings)
+        let replicator = view.layer as! CAReplicatorLayer
+        let step = CATransform3DGetAffineTransform(replicator.instanceTransform)
+        let original = view.eyeClipView.frame
+        let first = original.applying(step)
+        let second = first.applying(step)
+        #expect(replicator.instanceCount == 3)
+        #expect(first == g.replicaRect)
+        #expect(second == g.secondReplicaRect)
+        // Replikat 1 links, Replikat 2 rechts, je in ihrer Augenhälfte.
+        #expect(first.minX >= layout.leftEye.minX - 0.01 && first.maxX <= layout.leftEye.maxX + 0.01)
+        #expect(second.minX >= layout.rightEye.minX - 0.01 && second.maxX <= layout.rightEye.maxX + 0.01)
+        // Das Original wird von der Maske nicht durchgelassen, die Replikate schon.
+        let mask = try #require(view.layer.mask as? CAShapeLayer)
+        let path = try #require(mask.path)
+        #expect(path.contains(CGPoint(x: first.midX, y: first.midY)))
+        #expect(path.contains(CGPoint(x: second.midX, y: second.midY)))
+        #expect(!path.contains(CGPoint(x: original.midX, y: original.midY)))
+        #expect(!original.intersects(first))
+        // Andere Anordnungen haben keine Maske.
+        view.mode = .originalLeft
+        view.applyLayout(pageSize: CGSize(width: 402, height: 523))
+        #expect(view.layer.mask == nil)
+        #expect(replicator.instanceCount == 2)
+    }
+
+    @Test func mirrorPageSizeRejectsLandscapeStrip() {
+        // Gerätebericht Durchlauf 4: 750×127 pt nach Querformat-Umbruch.
+        let fixed = MirrorCinemaContainer.mirrorPageSize(for: CGSize(width: 750, height: 127))
+        #expect(fixed.width == 430)
+        #expect(fixed.height >= fixed.width * 1.3)
+        // Normale Hochformat-Größen bleiben unverändert.
+        #expect(MirrorCinemaContainer.mirrorPageSize(for: CGSize(width: 402, height: 523)) == CGSize(width: 402, height: 523))
+    }
+
+    @Test func assessmentForOriginalOnlyAndTwoReplicas() {
+        var run = MirrorTestRun(startedAt: Date(), source: .localVideoTest, mode: .originalOnly,
+                                calibration: .default, videoNaturalSize: .zero)
+        run.left.video = .visibleMoving
+        #expect(MirrorDiagnosticReport.assessment(run) == "Original allein zeigt bewegtes Video.")
+        run.mode = .twoReplicas
+        run.right.video = .black
+        #expect(MirrorDiagnosticReport.assessment(run).contains("nur in Replikat 1"))
+        run.left.video = .black
+        run.right.video = .visibleMoving
+        #expect(MirrorDiagnosticReport.assessment(run).contains("zuletzt gezeichnete Instanz"))
+        run.left.video = .visibleMoving
+        #expect(MirrorDiagnosticReport.assessment(run).contains("beiden Replikaten"))
+    }
+}
+
+// MARK: - Brillentaste und Wiedergabesteuerung
+
+@MainActor
+struct HeadsetButtonTests {
+    @Test func zoneSitsOnTheCenterLineOverFullHeight() {
+        let size = CGSize(width: 874, height: 402)
+        let zone = HeadsetButtonZone.zone(in: size)
+        #expect(zone.width == 72)
+        #expect(zone.height == size.height)
+        #expect(abs(zone.midX - size.width / 2) < 0.001)
+    }
+
+    @Test func zoneDoesNotCoverMirroredScreensBeyondItsStrip() {
+        // Standard-Kalibrierung: Die Leinwände enden vor dem Streifen bzw. nur knapp darin.
+        let size = CGSize(width: 874, height: 402)
+        let layout = StereoLayout.compute(container: size, contentAspect: 16.0 / 9.0, settings: .default)
+        let zone = HeadsetButtonZone.zone(in: size)
+        #expect(layout.leftScreen.maxX - zone.minX < 36)
+        #expect(zone.maxX - layout.rightScreen.minX < 36)
+    }
+
+    @Test func playbackScriptUsesOnlyDocumentedControls() {
+        let toggle = PlayerController.playbackScript(.toggle)
+        #expect(toggle.contains("('toggle')"))
+        #expect(toggle.contains("pauseVideo"))      // IFrame Player API
+        #expect(toggle.contains("best.pause()"))    // HTMLMediaElement
+        let seek = PlayerController.playbackScript(.seek(seconds: -10))
+        #expect(seek.contains("('seek:-10.0')"))
+        #expect(!seek.contains(".src"))
+        #expect(!seek.contains("currentSrc"))
+    }
+}

@@ -149,6 +149,10 @@ final class Demonic_VRUITests: XCTestCase {
         XCTAssertTrue(left.label.contains("Original-WebView"))
         XCTAssertTrue(app.staticTexts["cardboard.half.right"].label.contains("Replikat"))
 
+        // Brillentaste/Play-Pause: Rückmeldung erscheint.
+        app.buttons["cardboard.playPause"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["cardboard.playbackFeedback"].waitForExistence(timeout: 3))
+
         app.buttons["cardboard.exit"].tap()
         XCTAssertTrue(app.staticTexts["app.title"].waitForExistence(timeout: 5))
 

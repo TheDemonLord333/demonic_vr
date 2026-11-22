@@ -151,6 +151,8 @@ final class PlayerController: NSObject {
     @ObservationIgnored private(set) var isWebViewLent = false
     /// Nur während einer Spiegel-Sitzung darf MirrorCinemaView die WebView übernehmen.
     @ObservationIgnored var mirrorSessionActive = false
+    /// Seitengröße der WebView beim Start der Spiegel-Sitzung (vor dem Querformat-Wechsel).
+    @ObservationIgnored var mirrorPageSize: CGSize?
     @ObservationIgnored private let startURL: URL?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var embedVideoID: String?
@@ -336,6 +338,60 @@ final class PlayerController: NSObject {
         case .dismiss:
             issue = nil
         }
+    }
+
+    // MARK: - Wiedergabesteuerung (Brillentaste, Bedienleiste)
+
+    nonisolated enum PlaybackCommand: Equatable, Sendable {
+        case toggle
+        case seek(seconds: Double)
+    }
+
+    /// Ergebnis des letzten Befehls: "playing", "paused", "seeked" oder "none".
+    private(set) var lastPlaybackResult: String?
+
+    /// Steuert das sichtbare Video der Seite über öffentliche DOM- bzw. IFrame-API-Funktionen –
+    /// wie ein Tipp auf die Bedienelemente. Liest keine Stream-URLs.
+    func send(_ command: PlaybackCommand) {
+        guard let webView else { return }
+        lastPlaybackResult = nil
+        webView.evaluateJavaScript(Self.playbackScript(command)) { [weak self] result, _ in
+            let text = (result as? String) ?? "none"
+            Task { @MainActor in self?.lastPlaybackResult = text }
+        }
+    }
+
+    nonisolated static func playbackScript(_ command: PlaybackCommand) -> String {
+        let action: String
+        switch command {
+        case .toggle: action = "toggle"
+        case .seek(let seconds): action = "seek:" + String(format: "%.1f", seconds.isFinite ? seconds : 0)
+        }
+        return """
+        (function (action) {
+          var p = window.__demonicPlayer;
+          if (window.__demonicEmbed && p && typeof p.getPlayerState === 'function') {
+            if (action === 'toggle') {
+              if (p.getPlayerState() === 1) { p.pauseVideo(); return 'paused'; }
+              p.playVideo(); return 'playing';
+            }
+            var d = parseFloat(action.split(':')[1]) || 0;
+            p.seekTo(Math.max(0, p.getCurrentTime() + d), true); return 'seeked';
+          }
+          var videos = document.querySelectorAll('video'), best = null, area = 0;
+          for (var i = 0; i < videos.length; i++) {
+            var r = videos[i].getBoundingClientRect(), a = Math.max(0, r.width) * Math.max(0, r.height);
+            if (a > area) { area = a; best = videos[i]; }
+          }
+          if (!best) { return 'none'; }
+          if (action === 'toggle') {
+            if (best.paused) { best.play(); return 'playing'; }
+            best.pause(); return 'paused';
+          }
+          var delta = parseFloat(action.split(':')[1]) || 0;
+          best.currentTime = Math.max(0, best.currentTime + delta); return 'seeked';
+        })('\(action)');
+        """
     }
 
     // MARK: - Lokaler Spiegeltest

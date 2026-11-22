@@ -35,7 +35,7 @@ struct MirrorTestView: View {
                         ForEach(MirrorDisplayMode.allCases) { Text($0.title).tag($0) }
                     }
                     .accessibilityIdentifier("mirror.mode")
-                    Text("„Original rechts“ trennt Bildschirmhälfte und Instanz. „Nur Original“ zeigt, ob die WebView ohne Replikation Video zeigt.")
+                    Text("„Original rechts“ trennt Bildschirmhälfte und Instanz. „Nur Original“ zeigt, ob die WebView ohne Replikation Video zeigt. „Zwei Replikate“ verbirgt das Original und zeigt Replikat 1 links, Replikat 2 rechts – damit lässt sich prüfen, ob das Video in jeder Replik oder nur in der zuletzt gezeichneten Instanz erscheint.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
