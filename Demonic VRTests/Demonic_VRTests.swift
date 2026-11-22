@@ -343,3 +343,36 @@ struct GoogleOAuthTests {
         #expect(PKCE.makeVerifier().count >= 43)
     }
 }
+
+// MARK: - Bewegung und Spiegel-Modus
+
+@MainActor
+struct MirrorAndMotionTests {
+    @Test func blackOrRareChangesAreNotMotion() {
+        // Wie auf dem Gerät gemessen: fast nur schwarze, wiederholte Frames.
+        var black = FrameStatistics(startedAt: 0)
+        for i in 1...171 {
+            black.recordFrame(at: Double(i) / 30, duration: 0.002, isNew: i <= 4, isBlack: i > 27)
+        }
+        #expect(!black.detectedMotion)
+
+        var moving = FrameStatistics(startedAt: 0)
+        for i in 1...60 { moving.recordFrame(at: Double(i) / 30, duration: 0.002, isNew: true, isBlack: false) }
+        #expect(moving.detectedMotion)
+    }
+
+    @Test func mirrorSourceRectUsesVideoAndCrop() {
+        let page = CGSize(width: 402, height: 700)
+        let video = CGRect(x: 0, y: 48, width: 402, height: 226)
+        #expect(MirrorCinemaContainer.sourceRect(video: video, page: page, crop: .full) == video)
+        let half = MirrorCinemaContainer.sourceRect(video: video, page: page,
+                                                    crop: NormalizedRect(x: 0.5, y: 0, width: 0.5, height: 1))
+        #expect(half == CGRect(x: 201, y: 48, width: 201, height: 226))
+        #expect(MirrorCinemaContainer.sourceRect(video: nil, page: page, crop: .full) == CGRect(origin: .zero, size: page))
+    }
+
+    @Test func mirrorNeedsPlayingYouTubeVideo() {
+        let player = PlayerController(startURL: nil)
+        #expect(!player.mirrorReadiness(acknowledged: true).ready)
+    }
+}

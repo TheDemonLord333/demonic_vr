@@ -164,6 +164,30 @@ und Abspielzeit des sichtbaren `<video>`-Elements. Liefert WebKit für das Video
 nur schwarze oder eingefrorene Bilder, etwa weil die Videoebene hardwareseitig
 oder geschützt gerendert wird, bleibt Cardboard für YouTube gesperrt.
 
+### Spiegel-Modus für YouTube (experimentell)
+
+Messung auf dem iPhone: WebKit-Snapshots des YouTube-Videos sind vollständig
+schwarz (Helligkeit 0/255, alle Frames schwarz). Die Videoebene wird
+hardwareseitig gerendert und von `takeSnapshot` nicht erfasst. Der
+Snapshot-Weg bleibt deshalb wie vorgesehen gesperrt.
+
+Der Spiegel-Modus braucht keine Bildkopie:
+
+- Dieselbe WebView-Instanz wird für die Dauer von Cardboard ins linke Auge
+  gelegt. Sie wird so skaliert und beschnitten, dass das Videobild (mit
+  optionalem Ausschnitt) die Leinwand füllt.
+- Ein `CAReplicatorLayer` (öffentliche Core-Animation-API) dupliziert die Ebene
+  beim Compositing ins rechte Auge. Beide Augen zeigen dadurch denselben Frame.
+- Ton, Werbung und Bedienelemente bleiben im YouTube-Player. Es werden keine
+  Pixel gelesen und keine Stream-URLs verwendet.
+- Freigabe nur mit bestätigten Hinweisen und laufendem Video in der
+  YouTube-Ansicht.
+- Ob iOS die Videoebene mitspiegelt, lässt sich nur mit dem Auge prüfen. Beim
+  Start fragt die App deshalb nach: „Ja, beide Augen“, „Diagnose“ oder „Nein –
+  zum Player“.
+- Beim Verlassen kehrt die WebView ohne Neuladen an ihren Platz zurück. Die
+  Statuszeile zeigt dann den Sitzungsvergleich.
+
 ### Optionale Playlist-Ansicht
 
 Die Playlist-Ansicht nutzt den offiziellen Google-OAuth-2.0-Ablauf für native

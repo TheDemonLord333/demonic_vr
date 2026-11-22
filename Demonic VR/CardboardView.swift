@@ -19,29 +19,76 @@ struct CardboardView: View {
     @State private var controlsVisible = true
     @State private var calibrationVisible = false
     @State private var hideTask: Task<Void, Never>?
+    @State private var mirrorConfirmed = false
 
     private var frame: VideoFrame? {
         switch source {
         case .reference: return model.reference.frame
         case .youtube: return model.snapshot.latest
+        case .youtubeMirror: return nil
         }
+    }
+
+    private var counterText: String {
+        if source == .youtubeMirror {
+            let status = model.player.status
+            return "\(TimeFormatter.clock(status.currentTime)) \(status.isPaused ? "pausiert" : "läuft")"
+        }
+        return "Frame \(frame?.sequence ?? 0)"
     }
 
     var body: some View {
         ZStack {
             Color.black
 
-            StereoCinemaView(frame: frame, settings: model.calibration.settings)
-                .contentShape(Rectangle())
-                .onTapGesture { toggleControls() }
-                .accessibilityElement()
-                .accessibilityLabel("Stereo-Leinwand, Frame \(frame?.sequence ?? 0)")
-                .accessibilityIdentifier("cardboard.stereo")
+            if source == .youtubeMirror {
+                // Keine SwiftUI-Geste über der WebView: Die Leiste wird über die Eck-Taste gesteuert.
+                MirrorCinemaView(player: model.player,
+                                 settings: model.calibration.settings,
+                                 status: model.player.status)
+                    .accessibilityIdentifier("cardboard.mirror")
+            } else {
+                StereoCinemaView(frame: frame, settings: model.calibration.settings)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleControls() }
+                    .accessibilityElement()
+                    .accessibilityLabel("Stereo-Leinwand, Frame \(frame?.sequence ?? 0)")
+                    .accessibilityIdentifier("cardboard.stereo")
+            }
 
             if source == .youtube {
                 TimelineView(.periodic(from: .now, by: 0.5)) { _ in
                     healthOverlay
                 }
+            }
+
+            if source == .youtubeMirror && !mirrorConfirmed {
+                MirrorCheckPanel(
+                    onConfirm: { mirrorConfirmed = true; scheduleHide() },
+                    onDiagnostics: { model.exitCardboard(then: .diagnostics) },
+                    onExit: { model.exitCardboard() }
+                )
+            }
+
+            if !controlsVisible {
+                VStack {
+                    HStack {
+                        Spacer()
+                        Button {
+                            withAnimation { controlsVisible = true }
+                            scheduleHide()
+                        } label: {
+                            Image(systemName: "ellipsis.circle.fill")
+                                .font(.title2)
+                                .padding(10)
+                        }
+                        .accessibilityLabel("Bedienleiste einblenden")
+                        .accessibilityIdentifier("cardboard.showControls")
+                    }
+                    Spacer()
+                }
+                .padding(.top, 8)
+                .padding(.trailing, 16)
             }
 
             if controlsVisible {
@@ -100,7 +147,7 @@ struct CardboardView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(source.title).font(.subheadline.bold())
-                Text("Frame \(frame?.sequence ?? 0)")
+                Text(counterText)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("cardboard.frameCounter")
@@ -170,11 +217,44 @@ struct CardboardView: View {
     private func scheduleHide() {
         hideTask?.cancel()
         guard !model.environment.isUITest else { return }
+        if source == .youtubeMirror && !mirrorConfirmed { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled, !calibrationVisible else { return }
             withAnimation { controlsVisible = false }
         }
+    }
+}
+
+/// Ob die Videoebene mitgespiegelt wird, kann nur das Auge prüfen.
+private struct MirrorCheckPanel: View {
+    let onConfirm: () -> Void
+    let onDiagnostics: () -> Void
+    let onExit: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Label("Spiegel-Modus prüfen", systemImage: "eye.trianglebadge.exclamationmark")
+                .font(.headline)
+            Text("Läuft das Video in beiden Augen gleich? Wenn ein Auge schwarz oder eingefroren ist, spiegelt iOS die Videoebene auf diesem Gerät nicht.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+            HStack {
+                Button("Ja, beide Augen", action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("cardboard.mirror.confirm")
+                Button("Diagnose", action: onDiagnostics)
+                    .buttonStyle(.bordered)
+                Button("Nein – zum Player", action: onExit)
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("cardboard.mirror.exit")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: 460)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .padding(.bottom, 16)
     }
 }
 

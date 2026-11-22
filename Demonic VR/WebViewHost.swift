@@ -21,6 +21,7 @@ struct WebViewHost: UIViewRepresentable {
     func makeUIView(context: Context) -> WebViewContainer {
         let container = WebViewContainer()
         container.player = player
+        player.homeContainer = container
         return container
     }
 
@@ -49,10 +50,11 @@ final class WebViewContainer: UIView {
     }
 
     func attachIfPossible() {
-        guard window != nil, let player else { return }
+        guard window != nil, let player, !player.isWebViewLent else { return }
         let webView = player.hostedWebView()
         guard webView.superview !== self else { return }
         webView.removeFromSuperview()
+        webView.transform = .identity
         webView.frame = bounds
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         addSubview(webView)

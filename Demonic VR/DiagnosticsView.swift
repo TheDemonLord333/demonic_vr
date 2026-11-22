@@ -304,19 +304,34 @@ struct DiagnosticsView: View {
                         }
                         .buttonStyle(.bordered)
                         .disabled(model.snapshot.isRunning)
-                        Button("Cardboard starten") {
+                        Button("Snapshot-Cardboard") {
                             model.startYouTubeCardboard()
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(!ready)
                         .accessibilityIdentifier("gate.start")
                     }
+
+                    Divider()
+
+                    let mirror = model.player.mirrorReadiness(acknowledged: model.youtubeCardboardAcknowledged)
+                    Text("Spiegel-Modus: zeigt die echte WebView und lässt iOS die Ebene ins zweite Auge spiegeln (CAReplicatorLayer). Kein Bild wird kopiert – deshalb funktioniert er auch, wenn Snapshots schwarz sind. Ob beide Augen das Video zeigen, prüfst du in der Brille.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Label(mirror.message, systemImage: mirror.ready ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
+                        .foregroundStyle(mirror.ready ? DemonicTheme.accent : .orange)
+                    Button("Spiegel-Cardboard starten") {
+                        model.startYouTubeMirrorCardboard()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!mirror.ready)
+                    .accessibilityIdentifier("gate.startMirror")
                 }
             }
         } header: {
             Text("Cardboard-Freigabe (experimentell)")
         } footer: {
-            Text("Freigabe nur, wenn laufend neue, nicht schwarze Frames ankommen (≥ \(Int(CardboardGate.minimumNewFPS)) neue Frames/s) und die Quelle die normale YouTube-Ansicht ist. Bei Problemen bleibt der normale Player jederzeit erreichbar.")
+            Text("Snapshot-Cardboard nur, wenn laufend neue, nicht schwarze Frames ankommen (≥ \(Int(CardboardGate.minimumNewFPS)) neue Frames/s). Spiegel-Cardboard nur, wenn in der YouTube-Ansicht ein Video läuft. Beide setzen die bestätigten Hinweise voraus. Der normale Player bleibt jederzeit erreichbar.")
         }
     }
 

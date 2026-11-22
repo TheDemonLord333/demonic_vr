@@ -124,6 +124,8 @@ nonisolated struct FrameStatistics: Equatable, Sendable {
     private(set) var newFrames = 0
     private(set) var repeatedFrames = 0
     private(set) var blackFrames = 0
+    /// Neue Frames mit sichtbarem Inhalt (nicht schwarz).
+    private(set) var newVisibleFrames = 0
     private(set) var errors = 0
     private(set) var lastDuration: TimeInterval = 0
     private(set) var maxDuration: TimeInterval = 0
@@ -148,6 +150,7 @@ nonisolated struct FrameStatistics: Equatable, Sendable {
         delivered += 1
         if isNew {
             newFrames += 1
+            if !isBlack { newVisibleFrames += 1 }
             lastNewFrameAt = time
         } else {
             repeatedFrames += 1
@@ -211,8 +214,11 @@ nonisolated struct FrameStatistics: Equatable, Sendable {
         return rates
     }
 
-    /// Bewegung im Ausschnitt erkannt (mindestens zwei Bildwechsel).
-    var detectedMotion: Bool { newFrames >= 3 }
+    /// Bewegung im Ausschnitt: mindestens drei sichtbare neue Frames und mindestens
+    /// 20 % der gelieferten Frames sind sichtbar neu (vereinzelte Wechsel zählen nicht).
+    var detectedMotion: Bool {
+        newVisibleFrames >= 3 && Double(newVisibleFrames) >= 0.2 * Double(delivered)
+    }
 }
 
 // MARK: - Freigabe
