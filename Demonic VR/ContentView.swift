@@ -70,7 +70,7 @@ struct PlayerScreen: View {
                     model.player.perform(action)
                 }
             }
-            WebViewHost(webView: model.player.webView)
+            WebViewHost(player: model.player)
                 .background(Color.black)
             statusBar
         }

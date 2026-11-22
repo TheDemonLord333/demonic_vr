@@ -63,8 +63,11 @@ python3 -c "from PIL import Image; Image.open('Obsidian horned VR headset.png').
 
 ### YouTube-Wiedergabe
 
-- Es gibt genau **eine** `WKWebView`. Sie wird im `PlayerController` einmal
-  erzeugt und hängt dauerhaft in der Startansicht. Cardboard, Diagnose und
+- Es gibt genau **eine** `WKWebView`. Der `PlayerController` erzeugt sie
+  einmal, und zwar erst, wenn ihr Container im App-Fenster hängt. Danach hängt
+  sie dauerhaft in der Startansicht. (Unter iOS 26 stürzt eine WebView, die vor
+  dem Fenster erzeugt wurde, beim ersten Tipp in
+  `-[UIGestureRecognizer _delayTouchesForEvent:inPhase:]` ab.) Cardboard, Diagnose und
   Kalibrierung legen sich als Ebene oder Sheet darüber. So bleiben Sitzung,
   Cookies, Wiedergabe, Position und der einzige Audiopfad bei jedem Wechsel
   erhalten.

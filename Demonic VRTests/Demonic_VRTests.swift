@@ -103,12 +103,17 @@ struct YouTubeLinkTests {
 struct SingleWebViewTests {
     @Test func playerKeepsOneWebViewInstance() {
         let model = AppModel(environment: AppEnvironment(isUITest: true))
+        // Die WebView entsteht erst beim ersten Anzeigen, nicht schon mit dem Modell.
+        #expect(model.player.webView == nil)
+        let webView = model.player.hostedWebView()
+        #expect(model.player.hostedWebView() === webView)
         let before = model.player.continuityMark()
         model.startReferenceCardboard()
         #expect(model.isInCardboard)
         model.exitCardboard()
         let after = model.player.continuityMark()
-        #expect(before.webViewID == after.webViewID)
+        #expect(before.webViewID == ObjectIdentifier(webView))
+        #expect(after.webViewID == ObjectIdentifier(webView))
         #expect(ContinuityReport(before: before, after: after).sameWebView)
     }
 

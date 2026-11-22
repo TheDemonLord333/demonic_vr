@@ -79,7 +79,7 @@ nonisolated struct PlayerIssue: Identifiable, Equatable, Sendable {
 
 /// Momentaufnahme für die Prüfung „gleiche Sitzung nach Ansichtswechsel“.
 nonisolated struct ContinuityMark: Equatable, Sendable {
-    var webViewID: ObjectIdentifier
+    var webViewID: ObjectIdentifier?
     var url: URL?
     var currentTime: Double
     var isPaused: Bool
@@ -91,7 +91,7 @@ nonisolated struct ContinuityReport: Equatable, Sendable {
     var before: ContinuityMark
     var after: ContinuityMark
 
-    var sameWebView: Bool { before.webViewID == after.webViewID }
+    var sameWebView: Bool { before.webViewID != nil && before.webViewID == after.webViewID }
     var sameURL: Bool { Self.normalized(before.url) == Self.normalized(after.url) }
 
     /// Wiedergabe wurde nicht auf 0 zurückgesetzt und ist (falls sie lief) weitergelaufen.
@@ -138,12 +138,23 @@ final class PlayerController: NSObject {
     nonisolated static let messageHandlerName = "demonic"
     private static let preferEmbedKey = "demonicvr.preferEmbedPlayer"
 
-    @ObservationIgnored let webView: WKWebView
+    /// Die eine WebView. Sie wird erst erzeugt, wenn sie zum ersten Mal angezeigt wird
+    /// (siehe `hostedWebView()`): Eine vor dem App-Fenster erzeugte WKWebView lässt
+    /// iOS 26 beim ersten Tipp in `-[UIGestureRecognizer _delayTouchesForEvent:inPhase:]` abstürzen.
+    @ObservationIgnored private(set) var webView: WKWebView?
+    @ObservationIgnored private var pendingLoad: PendingLoad?
     @ObservationIgnored private let startURL: URL?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var embedVideoID: String?
     @ObservationIgnored private var lastRequestedURL: URL?
 
+    private enum PendingLoad {
+        case url(URL)
+        case embed(videoID: String, start: Int)
+    }
+
+    /// Kennung der WebView, sobald sie existiert (beobachtbar für die Anzeige).
+    private(set) var webViewID: ObjectIdentifier?
     private(set) var pageKind: PlayerPageKind = .blank
     private(set) var currentURL: URL?
     private(set) var title = ""
@@ -159,10 +170,9 @@ final class PlayerController: NSObject {
         UserDefaults.standard.set(value, forKey: Self.preferEmbedKey)
     }
 
-    var webViewID: ObjectIdentifier { ObjectIdentifier(webView) }
-
     var webViewShortID: String {
-        String(UInt(bitPattern: ObjectIdentifier(webView).hashValue) & 0xFFFFFF, radix: 16, uppercase: true)
+        guard let webViewID else { return "–" }
+        return String(UInt(bitPattern: webViewID.hashValue) & 0xFFFFFF, radix: 16, uppercase: true)
     }
 
     var sourceKind: FrameSourceKind {
@@ -176,6 +186,20 @@ final class PlayerController: NSObject {
 
     /// - Parameter startURL: Erste Seite. `nil` lädt nichts (UI-Tests ohne Netzwerk).
     init(startURL: URL? = PlayerController.homeURL) {
+        self.startURL = startURL
+        self.preferEmbedPlayer = UserDefaults.standard.bool(forKey: Self.preferEmbedKey)
+        super.init()
+        if let startURL {
+            pendingLoad = .url(startURL)
+            lastRequestedURL = startURL
+        }
+    }
+
+    /// Liefert die eine WebView und erzeugt sie beim ersten Aufruf. Wird von `WebViewHost`
+    /// aufgerufen, wenn das App-Fenster bereits existiert.
+    func hostedWebView() -> WKWebView {
+        if let webView { return webView }
+
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
@@ -183,32 +207,35 @@ final class PlayerController: NSObject {
         configuration.allowsAirPlayForMediaPlayback = false
         configuration.websiteDataStore = .default()
         configuration.defaultWebpagePreferences.preferredContentMode = .mobile
+        configuration.userContentController.add(ScriptMessageProxy(target: self), name: Self.messageHandlerName)
+        configuration.userContentController.addUserScript(WKUserScript(source: Self.statusScript,
+                                                                       injectionTime: .atDocumentEnd,
+                                                                       forMainFrameOnly: true))
 
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 600), configuration: configuration)
+        let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.allowsBackForwardNavigationGestures = true
         webView.accessibilityIdentifier = "player.webview"
-
-        self.webView = webView
-        self.startURL = startURL
-        self.preferEmbedPlayer = UserDefaults.standard.bool(forKey: Self.preferEmbedKey)
-        super.init()
-
-        let controller = webView.configuration.userContentController
-        controller.add(ScriptMessageProxy(target: self), name: Self.messageHandlerName)
-        controller.addUserScript(WKUserScript(source: Self.statusScript,
-                                              injectionTime: .atDocumentEnd,
-                                              forMainFrameOnly: true))
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        observeWebView()
+        self.webView = webView
+        observeWebView(webView)
 
-        if let startURL {
-            load(startURL)
+        // Beobachtbaren Zustand erst nach dem laufenden View-Update ändern.
+        let identifier = ObjectIdentifier(webView)
+        Task { @MainActor [weak self] in self?.webViewID = identifier }
+
+        if let pending = pendingLoad {
+            pendingLoad = nil
+            switch pending {
+            case .url(let url): webView.load(URLRequest(url: url))
+            case .embed(let videoID, let start): loadEmbedPage(in: webView, videoID: videoID, start: start)
+            }
         }
+        return webView
     }
 
     // MARK: - Navigation
@@ -219,15 +246,15 @@ final class PlayerController: NSObject {
     }
 
     func goBack() {
-        if webView.canGoBack { webView.goBack() }
+        if let webView, webView.canGoBack { webView.goBack() }
     }
 
     func reload() {
         issue = nil
-        if webView.url == nil, let lastRequestedURL {
-            load(lastRequestedURL)
-        } else {
+        if let webView, webView.url != nil {
             webView.reload()
+        } else if let lastRequestedURL {
+            load(lastRequestedURL)
         }
     }
 
@@ -258,13 +285,25 @@ final class PlayerController: NSObject {
     private func load(_ url: URL) {
         lastRequestedURL = url
         embedVideoID = nil
-        webView.load(URLRequest(url: url))
+        if let webView {
+            webView.load(URLRequest(url: url))
+        } else {
+            pendingLoad = .url(url)
+        }
     }
 
     func loadEmbed(videoID: String, start: Int) {
         guard YouTubeLink.isValidVideoID(videoID) else { return }
         embedVideoID = videoID
         lastRequestedURL = YouTubeLink.video(id: videoID, start: start).siteURL
+        if let webView {
+            loadEmbedPage(in: webView, videoID: videoID, start: start)
+        } else {
+            pendingLoad = .embed(videoID: videoID, start: start)
+        }
+    }
+
+    private func loadEmbedPage(in webView: WKWebView, videoID: String, start: Int) {
         webView.loadHTMLString(EmbedPlayerPage.html(videoID: videoID, start: start, origin: Self.embedOrigin),
                                baseURL: Self.embedOrigin)
     }
@@ -287,6 +326,7 @@ final class PlayerController: NSObject {
 
     /// Bereich der WebView, der für Snapshots aufgenommen wird (in View-Koordinaten).
     func captureRegion(now: Date = Date()) -> CaptureRegion? {
+        guard let webView, webView.window != nil else { return nil }
         let bounds = webView.bounds
         guard bounds.width > 1, bounds.height > 1 else { return nil }
         if status.hasVideo, now.timeIntervalSince(status.updatedAt) < 3 {
@@ -301,8 +341,8 @@ final class PlayerController: NSObject {
     }
 
     func continuityMark() -> ContinuityMark {
-        ContinuityMark(webViewID: webViewID,
-                       url: webView.url,
+        ContinuityMark(webViewID: webView.map(ObjectIdentifier.init),
+                       url: webView?.url,
                        currentTime: status.currentTime,
                        isPaused: status.isPaused,
                        hasVideo: status.hasVideo,
@@ -311,7 +351,7 @@ final class PlayerController: NSObject {
 
     // MARK: - Interna
 
-    private func observeWebView() {
+    private func observeWebView(_ webView: WKWebView) {
         observations = [
             webView.observe(\.isLoading, options: [.initial, .new]) { [weak self] webView, _ in
                 MainActor.assumeIsolated { self?.isLoading = webView.isLoading }
