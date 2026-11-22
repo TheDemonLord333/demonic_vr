@@ -6,11 +6,13 @@
 //  WKWebView wird ins linke Auge gelegt, so skaliert und beschnitten, dass nur
 //  der Videobereich die Leinwand füllt. Ein CAReplicatorLayer (öffentliche
 //  Core-Animation-API) dupliziert diese Ebene beim Compositing ins rechte Auge.
-//  Beide Augen zeigen damit denselben Frame. Es werden keine Pixel ausgelesen
+//  Falls iOS die Ebene repliziert, zeigen beide Augen denselben Frame. Jede
+//  Kopie bleibt in ihrer Augenhälfte. Es werden keine Pixel ausgelesen
 //  und keine Stream-URLs verwendet. Ton und Player bleiben in der WebView.
 //
-//  Ob die Videoebene der WebView mitrepliziert wird, entscheidet iOS. Das lässt
-//  sich nur auf dem Gerät prüfen. Deshalb fragt die Cardboard-Ansicht nach.
+//  Ob iOS die Videoebene der WKWebView überhaupt mitrepliziert, ist offen und
+//  auf dem iPhone noch nicht geprüft. Der Modus ist ein experimenteller Versuch;
+//  die Cardboard-Ansicht verlangt deshalb eine Sichtprüfung beider Augen.
 //
 
 import QuartzCore
@@ -99,28 +101,62 @@ final class MirrorCinemaContainer: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard let webView = player?.webView, webView.superview === stage,
-              bounds.width > 0, bounds.height > 0 else { return }
+        guard let webView = player?.webView, webView.superview === stage else { return }
+        applyLayout(pageSize: webView.bounds.size)
+    }
 
-        let pageSize = webView.bounds.size
+    /// Setzt Augenfenster, Bühne und Replikator-Verschiebung für eine Seite der Größe `pageSize`.
+    ///
+    /// Beide Instanzen des CAReplicatorLayer zeigen denselben Inhalt, nur um `dx` verschoben.
+    /// Eine unterschiedliche Beschneidung pro Auge (wie in `StereoCinemaView`) ist damit nicht
+    /// möglich. Deshalb wird die Quelle auf den Bereich begrenzt, der links in `leftEye` und
+    /// nach der Verschiebung rechts in `rightEye` liegt (`visibleScreenRect`). So bleibt jede
+    /// Kopie in ihrer Augenhälfte, und beide Augen zeigen exakt dieselbe Leinwand.
+    func applyLayout(pageSize: CGSize) {
+        guard bounds.width > 0, bounds.height > 0, pageSize.width > 0, pageSize.height > 0 else { return }
+
         stage.bounds = CGRect(origin: .zero, size: pageSize)
         let source = Self.sourceRect(video: videoRect, page: pageSize, crop: settings.effectiveCrop)
         let layout = StereoLayout.compute(container: bounds.size,
                                           contentAspect: source.width / max(source.height, 1),
                                           settings: settings)
+        let dx = Self.replicaOffset(for: layout)
+        let visible = Self.visibleScreenRect(for: layout)
 
-        eyeClip.frame = layout.leftScreen
+        eyeClip.isHidden = visible.isEmpty
+        eyeClip.frame = visible.isEmpty ? .zero : visible
+
+        // Quelle auf die volle linke Leinwand abbilden; das Augenfenster schneidet nur zu.
         let scale = layout.leftScreen.width / max(source.width, 1)
+        let screenOrigin = CGPoint(x: layout.leftScreen.minX - eyeClip.frame.minX,
+                                   y: layout.leftScreen.minY - eyeClip.frame.minY)
         stage.transform = CGAffineTransform(scaleX: scale, y: scale)
-        // Punkt source.origin der Bühne soll auf (0,0) des Augenfensters fallen.
-        stage.center = CGPoint(x: scale * (pageSize.width / 2 - source.minX),
-                               y: scale * (pageSize.height / 2 - source.minY))
+        stage.center = CGPoint(x: screenOrigin.x + scale * (pageSize.width / 2 - source.minX),
+                               y: screenOrigin.y + scale * (pageSize.height / 2 - source.minY))
 
         if let replicator = layer as? CAReplicatorLayer {
-            let dx = layout.rightScreen.minX - layout.leftScreen.minX
             replicator.instanceTransform = CATransform3DMakeTranslation(dx, 0, 0)
         }
     }
+
+    /// Verschiebung der replizierten Kopie (linke → rechte Leinwand).
+    nonisolated static func replicaOffset(for layout: StereoLayout) -> CGFloat {
+        layout.rightScreen.minX - layout.leftScreen.minX
+    }
+
+    /// Teil der linken Leinwand, der in `leftEye` liegt und dessen um `dx` verschobene Kopie
+    /// vollständig in `rightEye` liegt.
+    nonisolated static func visibleScreenRect(for layout: StereoLayout) -> CGRect {
+        let dx = replicaOffset(for: layout)
+        let rect = layout.leftScreen
+            .intersection(layout.leftEye)
+            .intersection(layout.rightEye.offsetBy(dx: -dx, dy: 0))
+        return rect.isNull ? .zero : rect
+    }
+
+    // Für Tests: tatsächliche Geometrie der Ansichten und Ebenen.
+    var eyeClipView: UIView { eyeClip }
+    var stageView: UIView { stage }
 
     /// Bereich der Seite, der die Leinwand füllt: Videobild, darin der manuelle Ausschnitt.
     nonisolated static func sourceRect(video: CGRect?, page: CGSize, crop: NormalizedRect) -> CGRect {

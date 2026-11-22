@@ -164,27 +164,33 @@ und Abspielzeit des sichtbaren `<video>`-Elements. Liefert WebKit für das Video
 nur schwarze oder eingefrorene Bilder, etwa weil die Videoebene hardwareseitig
 oder geschützt gerendert wird, bleibt Cardboard für YouTube gesperrt.
 
-### Spiegel-Modus für YouTube (experimentell)
+### Spiegel-Modus für YouTube (experimenteller Versuch)
 
-Messung auf dem iPhone: WebKit-Snapshots des YouTube-Videos sind vollständig
-schwarz (Helligkeit 0/255, alle Frames schwarz). Die Videoebene wird
-hardwareseitig gerendert und von `takeSnapshot` nicht erfasst. Der
-Snapshot-Weg bleibt deshalb wie vorgesehen gesperrt.
-
-Der Spiegel-Modus braucht keine Bildkopie:
+Der Snapshot-Weg liefert für YouTube kein nutzbares Bild (Messwerte siehe
+„Stand der Prüfung“) und bleibt gesperrt. Der Spiegel-Modus ist ein
+**experimenteller Versuch** ohne Bildkopie. Ob er auf dem iPhone funktioniert,
+ist **noch nicht geprüft**.
 
 - Dieselbe WebView-Instanz wird für die Dauer von Cardboard ins linke Auge
   gelegt. Sie wird so skaliert und beschnitten, dass das Videobild (mit
   optionalem Ausschnitt) die Leinwand füllt.
-- Ein `CAReplicatorLayer` (öffentliche Core-Animation-API) dupliziert die Ebene
-  beim Compositing ins rechte Auge. Beide Augen zeigen dadurch denselben Frame.
+- Ein `CAReplicatorLayer` (öffentliche Core-Animation-API) dupliziert diese
+  Ebene beim Compositing ins rechte Auge. **Ob iOS die Videoebene der
+  WKWebView mitrepliziert, ist offen.** Nur wenn das der Fall ist, zeigen beide
+  Augen denselben Frame.
+- Jede Kopie bleibt in ihrer Augenhälfte. Beide Instanzen des Replikators
+  zeigen zwangsläufig denselben Inhalt, nur verschoben. Deshalb wird die
+  Leinwand auf den Teil begrenzt, der links in der linken und, verschoben, rechts
+  in der rechten Augenhälfte liegt. Bei stark negativem Abstand oder sehr großer
+  Leinwand werden dadurch in **beiden** Augen dieselben Ränder abgeschnitten.
+  Die Snapshot-/Referenzansicht (`StereoCinemaView`) schneidet dagegen pro Auge
+  nur den Rand an der Bildschirmmitte ab.
 - Ton, Werbung und Bedienelemente bleiben im YouTube-Player. Es werden keine
   Pixel gelesen und keine Stream-URLs verwendet.
-- Freigabe nur mit bestätigten Hinweisen und laufendem Video in der
+- Start nur mit bestätigten Hinweisen und laufendem Video in der
   YouTube-Ansicht.
-- Ob iOS die Videoebene mitspiegelt, lässt sich nur mit dem Auge prüfen. Beim
-  Start fragt die App deshalb nach: „Ja, beide Augen“, „Diagnose“ oder „Nein –
-  zum Player“.
+- Nach dem Start ist eine **Sichtprüfung beider Augen** nötig: „Ja, beide
+  Augen“, „Diagnose“ oder „Nein – zum Player“.
 - Beim Verlassen kehrt die WebView ohne Neuladen an ihren Platz zurück. Die
   Statuszeile zeigt dann den Sitzungsvergleich.
 
@@ -224,7 +230,9 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
   (Symmetrie, Seitenverhältnis, Abstand, vertikale Position), Letterbox,
   Ausschnitt, Speichern/Laden/Zurücksetzen der Kalibrierung, Erkennung neuer,
   wiederholter und schwarzer Frames, Statistik, Freigabe-Logik, Quellenregeln,
-  Referenzszene, PKCE und OAuth-Redirect.
+  Referenzszene, PKCE und OAuth-Redirect sowie die Begrenzung des
+  Spiegel-Modus: echte Ebene und replizierte Kopie bleiben bei allen
+  Grenzwerten in ihrer Augenhälfte (`MirrorClippingRegressionTests`).
 - `Demonic VRUITests`: Start mit dem Namen „Demonic VR“, Referenzszene im
   Querformat mit laufendem Framezähler und Rückkehr zum Player, Kalibrierung
   und Zurücksetzen, ungültiger Link mit Rückweg, Live-Test der Referenzszene
@@ -258,13 +266,51 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
    Frames, erscheint der Hinweis mit „Diagnose“ und „Zurück zum Player“, und
    beides funktioniert.
 
+### iPhone-Testfolge Spiegel-Modus (neuer Stand, noch offen)
+
+1. **Beide Augen:** YouTube-Video in der YouTube-Ansicht starten → „Cardboard β“
+   → Hinweise bestätigen → „Spiegel-Cardboard starten“. In der Brille prüfen:
+   Läuft das Video im linken **und** rechten Auge, gleich und flüssig? Ist ein
+   Auge schwarz oder eingefroren, „Nein – zum Player“ wählen und das Ergebnis
+   notieren.
+2. **Kalibrierung:** Über „Kalibrierung“ Leinwandgröße 40 % und 100 %,
+   horizontalen Abstand −25 %, 0 % und +25 % sowie vertikale Position −50 % und
+   +50 % einstellen, zusätzlich einen manuellen Ausschnitt. Jede Leinwand muss
+   in ihrer Augenhälfte bleiben, ohne über die Mitte zu ragen, und beide Augen
+   müssen dasselbe Bild zeigen.
+3. **Rückkehr:** „Zurück zum Player“. Das Video läuft an derselben Position
+   weiter, ohne Neuladen und mit Ton. Die Statuszeile meldet „WebView gleich ·
+   Seite gleich“, und die Seite lässt sich wieder normal bedienen.
+4. **Erneut öffnen:** Den Spiegel-Modus noch einmal starten und Schritt 1 kurz
+   wiederholen.
+
 ## Stand der Prüfung
 
-Implementiert wurde der Code in einer Linux-Umgebung ohne macOS, Xcode und
-iPhone. Ein Swift-Compiler war dort nicht verfügbar. Deshalb sind noch **nicht**
-gelaufen: der Build, `xcodebuild -list`, die Unit- und UI-Tests sowie alle
-Prüfungen auf dem Gerät (Schritte 1–8 oben). Geprüft wurden das App-Icon
-(1024 × 1024, RGB ohne Alpha, Motiv vollständig), sein Eintrag in
-`Contents.json` und der PKCE-Testvektor (RFC 7636). Ob WebKit-Snapshots für
-YouTube-Videos auf dem iPhone 17 Pro wirklich Bildinhalt liefern, lässt sich nur
-auf dem Gerät klären. Genau dafür gibt es Diagnose und Freigabe.
+**Auf dem iPhone geprüft (Nutzertest, Stand vor dem Spiegel-Modus):**
+
+- Die App startet, die Startansicht ist bedienbar, und seit der verzögerten
+  WebView-Erzeugung lässt sich auch die YouTube-Seite bedienen.
+- YouTube läuft im normalen WebView-Player sichtbar.
+- YouTube-Snapshots: In 10 s kamen 286 bzw. 288 Bilder, davon jeweils nur
+  **ein** als neu erkanntes Bild. Die gemessene durchschnittliche Helligkeit
+  betrug 7/255, der Zähler meldete **null** schwarze Frames, die Vorschau wirkte
+  für den Nutzer aber schwarz. (Die Schwarz-Erkennung verlangt zusätzlich eine
+  maximale Helligkeit unter 48. Einzelne hellere Pixel reichen also, damit ein
+  dunkles Bild nicht als schwarz zählt.) Die Freigabe für Snapshot-Cardboard
+  blieb wegen fehlender neuer Frames gesperrt.
+- Referenzszene: 593 neue Bilder in 10 s. In der Cardboard-Referenzansicht lief
+  sie flüssig und auf beiden Seiten synchron. Das gilt für den bisherigen
+  Darstellungsweg mit lokal erzeugten Bildern (`StereoCinemaView`), **nicht**
+  für den Spiegel-Modus.
+
+**Noch nicht geprüft:**
+
+- Der Spiegel-Modus auf dem Gerät (Testfolge oben), insbesondere ob iOS die
+  Videoebene repliziert.
+- Build, Unit- und UI-Tests in Xcode. Der Code entstand in einer
+  Linux-Umgebung ohne macOS, Xcode und Swift-Compiler, deshalb liefen dort
+  weder Build noch Tests.
+
+Ohne Xcode geprüft wurden das App-Icon (1024 × 1024, RGB ohne Alpha),
+sein Eintrag in `Contents.json`, der PKCE-Testvektor (RFC 7636) und die
+Begrenzungsgeometrie des Spiegel-Modus (nachgerechnet, siehe Regressionstest).

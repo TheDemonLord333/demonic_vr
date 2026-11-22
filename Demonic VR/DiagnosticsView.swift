@@ -315,7 +315,7 @@ struct DiagnosticsView: View {
                     Divider()
 
                     let mirror = model.player.mirrorReadiness(acknowledged: model.youtubeCardboardAcknowledged)
-                    Text("Spiegel-Modus: zeigt die echte WebView und lässt iOS die Ebene ins zweite Auge spiegeln (CAReplicatorLayer). Kein Bild wird kopiert – deshalb funktioniert er auch, wenn Snapshots schwarz sind. Ob beide Augen das Video zeigen, prüfst du in der Brille.")
+                    Text("Spiegel-Modus (experimenteller Versuch): zeigt die echte WebView im linken Auge und lässt iOS die Ebene per CAReplicatorLayer ins rechte Auge duplizieren. Ob iOS die Videoebene der WebView dabei mitrepliziert, ist auf dem iPhone noch nicht bestätigt – auch nicht dadurch, dass Snapshots schwarz sind. Nach dem Start musst du in der Brille prüfen, ob beide Augen das laufende Video zeigen.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Label(mirror.message, systemImage: mirror.ready ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
