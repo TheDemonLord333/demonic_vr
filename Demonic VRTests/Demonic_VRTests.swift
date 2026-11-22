@@ -7,7 +7,9 @@
 
 import CoreGraphics
 import Foundation
+import QuartzCore
 import Testing
+import UIKit
 @testable import Demonic_VR
 
 // MARK: - YouTube-Links
@@ -341,5 +343,149 @@ struct GoogleOAuthTests {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
         #expect(PKCE.challenge(for: verifier) == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
         #expect(PKCE.makeVerifier().count >= 43)
+    }
+}
+
+// MARK: - Bewegung und Spiegel-Modus
+
+@MainActor
+struct MirrorAndMotionTests {
+    @Test func blackOrRareChangesAreNotMotion() {
+        // Wie auf dem Gerät gemessen: fast nur schwarze, wiederholte Frames.
+        var black = FrameStatistics(startedAt: 0)
+        for i in 1...171 {
+            black.recordFrame(at: Double(i) / 30, duration: 0.002, isNew: i <= 4, isBlack: i > 27)
+        }
+        #expect(!black.detectedMotion)
+
+        var moving = FrameStatistics(startedAt: 0)
+        for i in 1...60 { moving.recordFrame(at: Double(i) / 30, duration: 0.002, isNew: true, isBlack: false) }
+        #expect(moving.detectedMotion)
+    }
+
+    @Test func mirrorSourceRectUsesVideoAndCrop() {
+        let page = CGSize(width: 402, height: 700)
+        let video = CGRect(x: 0, y: 48, width: 402, height: 226)
+        #expect(MirrorCinemaContainer.sourceRect(video: video, page: page, crop: .full) == video)
+        let half = MirrorCinemaContainer.sourceRect(video: video, page: page,
+                                                    crop: NormalizedRect(x: 0.5, y: 0, width: 0.5, height: 1))
+        #expect(half == CGRect(x: 201, y: 48, width: 201, height: 226))
+        #expect(MirrorCinemaContainer.sourceRect(video: nil, page: page, crop: .full) == CGRect(origin: .zero, size: page))
+    }
+
+    @Test func mirrorNeedsPlayingYouTubeVideo() {
+        let player = PlayerController(startURL: nil)
+        #expect(!player.mirrorReadiness(acknowledged: true).ready)
+    }
+}
+
+// MARK: - Spiegel-Modus: Begrenzung pro Augenhälfte (Regression)
+
+@MainActor
+struct MirrorClippingRegressionTests {
+    nonisolated private static func settings(scale: Double, spacing: Double, vertical: Double = 0,
+                                 crop: NormalizedRect? = nil) -> CalibrationSettings {
+        var s = CalibrationSettings.default
+        s.screenScale = scale
+        s.horizontalSpacing = spacing
+        s.verticalOffset = vertical
+        if let crop {
+            s.cropEnabled = true
+            s.crop = crop
+        }
+        return s
+    }
+
+    /// Erlaubte Werte einschließlich der Grenzen.
+    nonisolated static let cases: [CalibrationSettings] = [
+        settings(scale: 0.9, spacing: -0.25),                 // Beispiel aus dem Review
+        settings(scale: 0.9, spacing: 0.25),
+        settings(scale: 1.0, spacing: -0.25),
+        settings(scale: 1.0, spacing: 0.25),
+        settings(scale: 1.0, spacing: 0),
+        settings(scale: 0.4, spacing: -0.25, vertical: -0.5),
+        settings(scale: 0.4, spacing: 0.25, vertical: 0.5),
+        settings(scale: 1.0, spacing: -0.25, vertical: 0.5),
+        settings(scale: 0.9, spacing: -0.25, crop: NormalizedRect(x: 0.6, y: 0.1, width: 0.4, height: 0.9)),
+        settings(scale: 1.0, spacing: 0.25, crop: NormalizedRect(x: 0, y: 0, width: 0.1, height: 1)),
+    ]
+
+    private struct Measured {
+        var layout: StereoLayout
+        var left: CGRect    // Instanz 0 (echte Ebene) im Container
+        var right: CGRect   // Instanz 1 (replizierte Kopie) im Container
+        var screenOfSource: CGRect
+        var clips: Bool
+        var instances: Int
+    }
+
+    private func measure(container size: CGSize, page: CGSize, settings: CalibrationSettings) -> Measured {
+        let view = MirrorCinemaContainer(frame: CGRect(origin: .zero, size: size))
+        view.settings = settings
+        view.videoRect = nil
+        view.applyLayout(pageSize: page)
+
+        let replicator = view.layer as! CAReplicatorLayer
+        let shift = CATransform3DGetAffineTransform(replicator.instanceTransform)
+        let left = view.eyeClipView.frame
+        let right = left.applying(shift)
+
+        let source = MirrorCinemaContainer.sourceRect(video: nil, page: page, crop: settings.effectiveCrop)
+        let layout = StereoLayout.compute(container: size,
+                                          contentAspect: source.width / source.height,
+                                          settings: settings)
+        let mapped = view.stageView.convert(source, to: view)
+        return Measured(layout: layout, left: left, right: right, screenOfSource: mapped,
+                        clips: view.eyeClipView.clipsToBounds, instances: replicator.instanceCount)
+    }
+
+    private func inside(_ inner: CGRect, _ outer: CGRect, tolerance: CGFloat = 0.01) -> Bool {
+        inner.minX >= outer.minX - tolerance && inner.maxX <= outer.maxX + tolerance &&
+            inner.minY >= outer.minY - tolerance && inner.maxY <= outer.maxY + tolerance
+    }
+
+    private func close(_ a: CGRect, _ b: CGRect, tolerance: CGFloat = 0.01) -> Bool {
+        abs(a.minX - b.minX) < tolerance && abs(a.minY - b.minY) < tolerance &&
+            abs(a.width - b.width) < tolerance && abs(a.height - b.height) < tolerance
+    }
+
+    @Test func reviewExampleNoLongerOverlaps() {
+        let m = measure(container: CGSize(width: 800, height: 400),
+                        page: CGSize(width: 1600, height: 900),
+                        settings: MirrorClippingRegressionTests.cases[0])
+        // StereoLayout selbst: links 70–430, rechts 370–730 (60 pt Überlappung).
+        #expect(abs(m.layout.leftScreen.minX - 70) < 0.01 && abs(m.layout.leftScreen.maxX - 430) < 0.01)
+        #expect(abs(m.layout.rightScreen.minX - 370) < 0.01 && abs(m.layout.rightScreen.maxX - 730) < 0.01)
+        // Tatsächlich sichtbar: links 100–400, Kopie rechts 400–700.
+        #expect(abs(m.left.minX - 100) < 0.01 && abs(m.left.maxX - 400) < 0.01)
+        #expect(abs(m.right.minX - 400) < 0.01 && abs(m.right.maxX - 700) < 0.01)
+        #expect(!m.left.intersects(m.right))
+    }
+
+    @Test(arguments: MirrorClippingRegressionTests.cases)
+    func bothInstancesStayInTheirEyeHalf(_ settings: CalibrationSettings) {
+        for size in [CGSize(width: 800, height: 400), CGSize(width: 874, height: 402)] {
+            let m = measure(container: size, page: CGSize(width: 402, height: 226), settings: settings)
+            #expect(m.instances == 2)
+            #expect(m.clips)
+            #expect(!m.left.isEmpty)
+            // Echte Ebene in der linken, replizierte Kopie in der rechten Augenhälfte.
+            #expect(inside(m.left, m.layout.leftEye), "links \(m.left) außerhalb \(m.layout.leftEye)")
+            #expect(inside(m.right, m.layout.rightEye), "rechts \(m.right) außerhalb \(m.layout.rightEye)")
+            #expect(!m.left.intersects(m.right))
+            // Sichtbar ist nur Leinwand, und die Kopie liegt auf der rechten Leinwand.
+            #expect(inside(m.left, m.layout.leftScreen))
+            #expect(inside(m.right, m.layout.rightScreen))
+            // Größe, Abstand, vertikale Position und Ausschnitt bleiben wirksam:
+            // Der Quellbereich füllt genau die berechnete linke Leinwand.
+            #expect(close(m.screenOfSource, m.layout.leftScreen), "\(m.screenOfSource) ≠ \(m.layout.leftScreen)")
+        }
+    }
+
+    @Test func withoutOverlapTheWholeScreenIsVisible() {
+        let s = Self.settings(scale: 0.9, spacing: 0.1)
+        let m = measure(container: CGSize(width: 874, height: 402), page: CGSize(width: 402, height: 226), settings: s)
+        #expect(close(m.left, m.layout.leftScreen))
+        #expect(close(m.right, m.layout.rightScreen))
     }
 }

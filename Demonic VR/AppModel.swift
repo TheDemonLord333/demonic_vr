@@ -13,12 +13,16 @@ import SwiftUI
 
 nonisolated enum CardboardSource: String, Equatable, Sendable {
     case reference
+    /// YouTube über WebKit-Snapshots (Bildkopie, Diagnose möglich).
     case youtube
+    /// YouTube über CAReplicatorLayer (keine Bildkopie, Ebene wird gespiegelt).
+    case youtubeMirror
 
     var title: String {
         switch self {
         case .reference: return "Referenzszene"
-        case .youtube: return "YouTube (experimentell)"
+        case .youtube: return "YouTube · Snapshot (experimentell)"
+        case .youtubeMirror: return "YouTube · Spiegel (experimentell)"
         }
     }
 }
@@ -116,6 +120,15 @@ final class AppModel {
     }
 
     @discardableResult
+    func startYouTubeMirrorCardboard() -> Bool {
+        guard player.mirrorReadiness(acknowledged: youtubeCardboardAcknowledged).ready else { return false }
+        snapshot.stop()
+        sheet = nil
+        enterCardboard(.youtubeMirror)
+        return true
+    }
+
+    @discardableResult
     func startYouTubeCardboard() -> Bool {
         guard canStartYouTubeCardboard() else { return false }
         sheet = nil
@@ -132,6 +145,7 @@ final class AppModel {
     func exitCardboard(then nextSheet: Sheet? = nil) {
         snapshot.stop()
         reference.stop()
+        player.returnWebViewHome()
         screen = .player
         if let nextSheet { sheet = nextSheet }
         guard let start = continuityStart else { return }
@@ -148,6 +162,7 @@ final class AppModel {
         switch source {
         case .reference: reference.start()
         case .youtube: snapshot.startCardboardStream()
+        case .youtubeMirror: break
         }
     }
 
@@ -155,6 +170,7 @@ final class AppModel {
         switch source {
         case .reference: reference.stop()
         case .youtube: snapshot.stop()
+        case .youtubeMirror: player.returnWebViewHome()
         }
     }
 

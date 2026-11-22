@@ -143,6 +143,10 @@ final class PlayerController: NSObject {
     /// iOS 26 beim ersten Tipp in `-[UIGestureRecognizer _delayTouchesForEvent:inPhase:]` abstürzen.
     @ObservationIgnored private(set) var webView: WKWebView?
     @ObservationIgnored private var pendingLoad: PendingLoad?
+    /// Normaler Platz der WebView in der Startansicht.
+    @ObservationIgnored weak var homeContainer: WebViewContainer?
+    /// `true`, solange der Spiegel-Modus die WebView anzeigt.
+    @ObservationIgnored private(set) var isWebViewLent = false
     @ObservationIgnored private let startURL: URL?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var embedVideoID: String?
@@ -320,6 +324,36 @@ final class PlayerController: NSObject {
         case .dismiss:
             issue = nil
         }
+    }
+
+    // MARK: - Spiegel-Modus
+
+    /// Der Spiegel-Modus übernimmt dieselbe WebView-Instanz (kein Neuladen).
+    func lendWebView() {
+        isWebViewLent = true
+    }
+
+    /// Bringt die WebView zurück an ihren Platz in der Startansicht.
+    func returnWebViewHome() {
+        guard isWebViewLent else { return }
+        isWebViewLent = false
+        homeContainer?.attachIfPossible()
+    }
+
+    /// Voraussetzungen für den Spiegel-Modus: Quelle freigegeben und ein laufendes Video erkannt.
+    func mirrorReadiness(acknowledged: Bool, now: Date = Date()) -> (ready: Bool, message: String) {
+        switch SourcePolicy.evaluate(sourceKind, acknowledged: acknowledged) {
+        case .notPermitted(let reason): return (false, reason)
+        case .needsAcknowledgement: return (false, "Bitte die Hinweise bestätigen.")
+        case .allowed: break
+        }
+        guard status.hasVideo, now.timeIntervalSince(status.updatedAt) < 3 else {
+            return (false, "Kein Video auf der Seite erkannt. Video in der YouTube-Ansicht öffnen.")
+        }
+        guard !status.isPaused else {
+            return (false, "Video ist pausiert. Bitte starten, dann Cardboard öffnen.")
+        }
+        return (true, "Video läuft – Spiegel-Modus möglich.")
     }
 
     // MARK: - Snapshot-Bereich und Sitzung
