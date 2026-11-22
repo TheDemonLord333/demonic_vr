@@ -144,7 +144,12 @@ final class SnapshotEngine {
         guard openCalls == 0 else { return }
         let started = CACurrentMediaTime()
         guard let region = player.captureRegion() else {
-            lastError = "WebView hat keine Größe."
+            lastError = "WebView ist nicht sichtbar oder hat keine Größe."
+            stats.recordError(at: started, duration: 0)
+            return
+        }
+        guard let webView = player.webView else {
+            lastError = "WebView ist noch nicht angezeigt."
             stats.recordError(at: started, duration: 0)
             return
         }
@@ -156,7 +161,7 @@ final class SnapshotEngine {
         openCalls += 1
         maxOpenCalls = max(maxOpenCalls, openCalls)
         let result: Result<UIImage, Error> = await withCheckedContinuation { continuation in
-            player.webView.takeSnapshot(with: configuration) { image, error in
+            webView.takeSnapshot(with: configuration) { image, error in
                 if let image {
                     continuation.resume(returning: .success(image))
                 } else {
