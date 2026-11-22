@@ -151,6 +151,8 @@ final class PlayerController: NSObject {
     @ObservationIgnored private(set) var isWebViewLent = false
     /// Nur während einer Spiegel-Sitzung darf MirrorCinemaView die WebView übernehmen.
     @ObservationIgnored var mirrorSessionActive = false
+    /// Seitengröße der WebView beim Start der Spiegel-Sitzung (vor dem Querformat-Wechsel).
+    @ObservationIgnored var mirrorPageSize: CGSize?
     @ObservationIgnored private let startURL: URL?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var embedVideoID: String?

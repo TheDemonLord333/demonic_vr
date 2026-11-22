@@ -36,6 +36,10 @@ nonisolated enum MirrorDisplayMode: String, CaseIterable, Identifiable, Codable,
     case originalRight
     /// Nur das Original links, kein Replikat – zeigt, ob das Original allein Video zeigt.
     case originalOnly
+    /// Drei Instanzen: Original (Instanz 0) außerhalb der Augen verborgen, Replikat 1 links,
+    /// Replikat 2 rechts. Trennt „jede Replik zeigt Video“ von „nur die zuletzt gezeichnete
+    /// Instanz zeigt Video“.
+    case twoReplicas
 
     var id: String { rawValue }
 
@@ -44,14 +48,27 @@ nonisolated enum MirrorDisplayMode: String, CaseIterable, Identifiable, Codable,
         case .originalLeft: return "Original links · Replikat rechts"
         case .originalRight: return "Original rechts · Replikat links"
         case .originalOnly: return "Nur Original links · ohne Replikat"
+        case .twoReplicas: return "Zwei Replikate · Original verborgen"
         }
     }
 
     var originalIsLeft: Bool { self != .originalRight }
     var replicates: Bool { self != .originalOnly }
 
+    /// Anzahl der Instanzen im CAReplicatorLayer.
+    var instanceCount: Int {
+        switch self {
+        case .originalOnly: return 1
+        case .originalLeft, .originalRight: return 2
+        case .twoReplicas: return 3
+        }
+    }
+
     /// Beschriftung der Bildschirmhälfte.
     func role(leftHalf: Bool) -> String {
+        if self == .twoReplicas {
+            return leftHalf ? "Replikat 1 (Instanz 1)" : "Replikat 2 (Instanz 2, zuletzt gezeichnet)"
+        }
         if leftHalf {
             return originalIsLeft ? "Original-WebView" : "Replikat (CAReplicatorLayer)"
         }
@@ -74,6 +91,8 @@ nonisolated struct MirrorGeometry: Equatable, Sendable {
     /// Sichtbarer Bereich des Replikats im Container (leer ohne Replikat).
     var replicaRect: CGRect
     var instanceCount: Int
+    /// Nur bei `.twoReplicas`: sichtbarer Bereich von Replikat 2 (Instanz 2).
+    var secondReplicaRect: CGRect? = nil
 }
 
 struct MirrorCinemaView: UIViewRepresentable {
@@ -153,8 +172,10 @@ final class MirrorCinemaContainer: UIView {
     func adoptWebViewIfPossible() {
         guard window != nil, let player, player.mirrorSessionActive, let webView = player.webView else { return }
         guard webView.superview !== stage else { return }
-        // Größe beibehalten, damit die Seite nicht neu umbricht und die Videoposition stimmt.
-        let size = webView.bounds.size
+        // Feste Seitengröße aus der Zeit VOR dem Querformat-Wechsel (siehe AppModel.enterCardboard).
+        // Sonst übernimmt der Spiegel eine bereits ins Querformat umgebrochene WebView
+        // (Gerätebericht: 750×127 pt → Videobereich auf 72 pt beschnitten).
+        let size = Self.mirrorPageSize(for: player.mirrorPageSize ?? webView.bounds.size)
         player.lendWebView()
         webView.removeFromSuperview()
         webView.autoresizingMask = []
@@ -196,12 +217,16 @@ final class MirrorCinemaContainer: UIView {
         let layout = StereoLayout.compute(container: bounds.size,
                                           contentAspect: source.width / max(source.height, 1),
                                           settings: settings)
-        let originalScreen = mode.originalIsLeft ? layout.leftScreen : layout.rightScreen
         let dx = Self.replicaOffset(for: layout, mode: mode)
         let visible = Self.visibleScreenRect(for: layout, mode: mode)
+        // Bei `.twoReplicas` liegt das Original um dx nach links versetzt (Instanz 1 landet dann
+        // auf der linken, Instanz 2 auf der rechten Leinwand) und wird per Maske verborgen.
+        let originalOffset: CGFloat = mode == .twoReplicas ? -dx : 0
+        let originalScreen = (mode.originalIsLeft ? layout.leftScreen : layout.rightScreen)
+            .offsetBy(dx: originalOffset, dy: 0)
 
         eyeClip.isHidden = visible.isEmpty
-        eyeClip.frame = visible.isEmpty ? .zero : visible
+        eyeClip.frame = visible.isEmpty ? .zero : visible.offsetBy(dx: originalOffset, dy: 0)
 
         // Quelle auf die volle Leinwand des Originals abbilden; das Augenfenster schneidet nur zu.
         let scale = originalScreen.width / max(source.width, 1)
@@ -211,21 +236,43 @@ final class MirrorCinemaContainer: UIView {
         stage.center = CGPoint(x: screenOrigin.x + scale * (pageSize.width / 2 - source.minX),
                                y: screenOrigin.y + scale * (pageSize.height / 2 - source.minY))
 
-        let instances = mode.replicates ? 2 : 1
+        let instances = mode.instanceCount
         if let replicator = layer as? CAReplicatorLayer {
             replicator.instanceCount = instances
             replicator.instanceTransform = CATransform3DMakeTranslation(dx, 0, 0)
+        }
+        let replica1 = mode.replicates ? eyeClip.frame.offsetBy(dx: dx, dy: 0) : .zero
+        let replica2: CGRect? = mode == .twoReplicas ? eyeClip.frame.offsetBy(dx: 2 * dx, dy: 0) : nil
+        if mode == .twoReplicas, !visible.isEmpty, let replica2 {
+            // Nur die beiden Replikate durchlassen; das Original bleibt unsichtbar.
+            let mask = CAShapeLayer()
+            let path = CGMutablePath()
+            path.addRect(replica1)
+            path.addRect(replica2)
+            mask.path = path
+            mask.frame = bounds
+            layer.mask = mask
+        } else {
+            layer.mask = nil
         }
         return MirrorGeometry(containerSize: bounds.size,
                               pageSize: pageSize,
                               videoRect: videoRect,
                               sourceRect: source,
                               originalRect: eyeClip.frame,
-                              replicaRect: mode.replicates ? eyeClip.frame.offsetBy(dx: dx, dy: 0) : .zero,
-                              instanceCount: instances)
+                              replicaRect: replica1,
+                              instanceCount: instances,
+                              secondReplicaRect: replica2)
     }
 
-    /// Verschiebung des Replikats gegenüber dem Original.
+    /// Hochformatige Seitengröße für den Spiegel: Breite 320…430 pt, Höhe mindestens 1,3 × Breite.
+    nonisolated static func mirrorPageSize(for size: CGSize) -> CGSize {
+        let width = min(max(size.width, 320), 430)
+        let height = max(size.height, width * 1.3)
+        return CGSize(width: width, height: height)
+    }
+
+    /// Verschiebung des (ersten) Replikats gegenüber dem Original.
     nonisolated static func replicaOffset(for layout: StereoLayout, mode: MirrorDisplayMode = .originalLeft) -> CGFloat {
         guard mode.replicates else { return 0 }
         return mode.originalIsLeft
@@ -237,6 +284,8 @@ final class MirrorCinemaContainer: UIView {
     /// Kopie vollständig in der anderen Augenhälfte liegt.
     nonisolated static func visibleScreenRect(for layout: StereoLayout, mode: MirrorDisplayMode = .originalLeft) -> CGRect {
         let originalScreen = mode.originalIsLeft ? layout.leftScreen : layout.rightScreen
+        // `.twoReplicas`: Replikat 1 = linke Leinwand, Replikat 2 = rechte – gleiche Begrenzung
+        // wie im Standardmodus (Original links), nur um eine Instanz verschoben.
         let originalEye = mode.originalIsLeft ? layout.leftEye : layout.rightEye
         let replicaEye = mode.originalIsLeft ? layout.rightEye : layout.leftEye
         var rect = originalScreen.intersection(originalEye)

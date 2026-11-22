@@ -160,6 +160,7 @@ final class AppModel {
         continuityStart = player.continuityMark()
         continuity = nil
         if source.isMirror {
+            player.mirrorPageSize = player.webView?.bounds.size
             player.mirrorSessionActive = true
             mirrorTest.begin(source: player.sourceKind,
                              calibration: calibration.settings,
@@ -179,6 +180,7 @@ final class AppModel {
         // sichtbare Spiegel-Ansicht die WebView beim nächsten Update zurück.
         player.mirrorSessionActive = false
         player.returnWebViewHome()
+        player.mirrorPageSize = nil
         screen = .player
         if let nextSheet { sheet = nextSheet }
         guard let start = continuityStart else { return }

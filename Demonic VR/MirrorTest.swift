@@ -131,7 +131,11 @@ nonisolated enum MirrorDiagnosticReport {
                 lines.append("  Container: \(describe(g.containerSize)) · Instanzen: \(g.instanceCount)")
                 lines.append("  Erkanntes Videorechteck (Seite): \(g.videoRect.map { describe($0) } ?? "keins – ganze Seite")")
                 lines.append("  Quellbereich nach Ausschnitt: \(describe(g.sourceRect))")
-                lines.append("  Sichtbar Original: \(describe(g.originalRect)) · Replikat: \(g.instanceCount > 1 ? describe(g.replicaRect) : "–")")
+                if let second = g.secondReplicaRect {
+                    lines.append("  Original (verborgen): \(describe(g.originalRect)) · Replikat 1: \(describe(g.replicaRect)) · Replikat 2: \(describe(second))")
+                } else {
+                    lines.append("  Sichtbar Original: \(describe(g.originalRect)) · Replikat: \(g.instanceCount > 1 ? describe(g.replicaRect) : "–")")
+                }
             } else {
                 lines.append("  Geometrie: nicht erfasst")
             }
@@ -146,15 +150,25 @@ nonisolated enum MirrorDiagnosticReport {
 
     /// Vorsichtige Einordnung – keine Ursachenbehauptung (insbesondere keine DRM-Diagnose).
     static func assessment(_ run: MirrorTestRun) -> String {
+        // Ohne Replikat ist nur die linke Hälfte zu prüfen.
+        if run.mode == .originalOnly {
+            switch run.left.video {
+            case .notRecorded: return "Sichtprüfung unvollständig (links)."
+            case .visibleMoving: return "Original allein zeigt bewegtes Video."
+            default: return "Original allein zeigt kein bewegtes Video – Problem schon ohne Replikation."
+            }
+        }
         guard run.left.video != .notRecorded, run.right.video != .notRecorded else {
             return "Sichtprüfung unvollständig."
         }
         let leftOK = run.left.video == .visibleMoving
         let rightOK = run.right.video == .visibleMoving
-        if run.mode == .originalOnly {
-            return leftOK
-                ? "Original allein zeigt bewegtes Video."
-                : "Original allein zeigt kein bewegtes Video – Problem schon ohne Replikation."
+        if run.mode == .twoReplicas {
+            if leftOK && rightOK { return "Video in beiden Replikaten bewegt sichtbar – Replikation ohne sichtbares Original funktioniert." }
+            if !leftOK && !rightOK { return "Video in keinem Replikat bewegt sichtbar." }
+            return rightOK
+                ? "Video nur in Replikat 2 (rechts, zuletzt gezeichnete Instanz)."
+                : "Video nur in Replikat 1 (links)."
         }
         if leftOK && rightOK { return "Video in beiden Hälften bewegt sichtbar." }
         if !leftOK && !rightOK { return "Video in keiner Hälfte bewegt sichtbar." }

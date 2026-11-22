@@ -275,7 +275,54 @@ Cardboard-Prüfung.
 - Die native Referenzszene bleibt als eigener Vergleich erhalten (lokal
   gezeichnete Bilder, ohne WebView und ohne Replikation).
 
-**Auswertung:**
+**Gerätebericht vom 22.11.2026 (iPhone18,1, iOS 27.2.1, App 1.3), manuelle Befunde:**
+
+| Quelle | Anordnung | links | rechts |
+|---|---|---|---|
+| Lokales Video | Original links · Replikat rechts (Lauf 3, 5) | schwarz | bewegt |
+| Lokales Video | Original rechts · Replikat links (Lauf 6) | bewegt | schwarz |
+| Lokales Video | Nur Original links (Lauf 7) | bewegt | – |
+| YouTube | Original links · Replikat rechts (Lauf 9) | schwarz | bewegt |
+| YouTube | Original rechts · Replikat links (Lauf 11) | bewegt | eingefroren |
+| YouTube | Nur Original links (Lauf 12) | bewegt | – |
+
+Die HTML-Oberfläche bzw. die Bedienelemente waren in allen erfassten Läufen
+auf beiden Seiten sichtbar.
+
+**Einordnung:**
+
+- Das selbst erzeugte, ungeschützte Testvideo verhält sich wie YouTube. Das
+  einseitige Bild ist daher **nicht YouTube-spezifisch**, und es gibt **keinen
+  Hinweis auf Inhaltsschutz**.
+- Das Videobild folgt der **replizierten Instanz**, nicht einer
+  Bildschirmhälfte: Beim Tauschen der Anordnung wechselt es die Seite.
+- Ohne Replikation zeigt das Original das Video. Mit Replikation erscheint das
+  Videobild nur in einer Instanz, die HTML-Ebenen dagegen in beiden. Das ist
+  eine Grenze dieses Weges (`CAReplicatorLayer` mit einer WKWebView-Videoebene),
+  kein Fehler in der Geometrie. Die genaue Ursache in iOS/WebKit ist nicht
+  belegt.
+- Noch offen ist, ob das Video in **jedem** Replikat erscheint oder nur in der
+  **zuletzt gezeichneten** Instanz. Mit zwei Instanzen fällt beides zusammen.
+  Dafür gibt es die Anordnung **„Zwei Replikate · Original verborgen“**: drei
+  Instanzen, das Original wird per Maske ausgeblendet, Replikat 1 liegt links,
+  Replikat 2 rechts.
+  - Zeigen beide Hälften bewegtes Video, wäre das ein nutzbarer Weg für
+    Cardboard.
+  - Zeigt nur die rechte Hälfte Video, erscheint das Video nur in der zuletzt
+    gezeichneten Instanz. Dann ist dieser Weg mit öffentlichen Mitteln für zwei
+    Augen nicht nutzbar.
+
+**Aus dem Bericht behobene Fehler:**
+
+- Lauf 4 zeigt eine WebView-Größe von 750×127 pt. Die WebView war beim
+  Übernehmen schon ins Querformat umgebrochen, und der Videobereich wurde auf
+  einen Streifen von 72 pt beschnitten. Jetzt wird die Seitengröße beim Start
+  vor dem Querformat-Wechsel festgehalten und auf eine hochformatige Größe
+  begrenzt (Breite 320–430 pt, Höhe mindestens das 1,3-Fache der Breite).
+- „Nur Original“ wurde als „Sichtprüfung unvollständig“ eingeordnet, obwohl
+  in diesem Modus nur die linke Hälfte zu prüfen ist. Das ist korrigiert.
+
+**Allgemeine Auswertungsregel:**
 
 - Erscheint auch das lokale Video nur in einer Hälfte, liegt das Problem
   allgemein am Weg, das Video per Replikation zu kopieren, nicht an YouTube.
@@ -358,6 +405,15 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
 8. **Schwarzes oder eingefrorenes Bild:** Liefert YouTube in Cardboard keine
    Frames, erscheint der Hinweis mit „Diagnose“ und „Zurück zum Player“, und
    beides funktioniert.
+
+### iPhone-Schrittfolge: Zwei-Replikate-Test (nächster Schritt)
+
+1. Neu bauen und installieren, dann „Spiegeltest“ öffnen.
+2. „Testseite in der WebView laden“ wählen, Anordnung „Zwei Replikate ·
+   Original verborgen“, dann „Spiegel starten – lokales Video“.
+3. Über „Beobachtung“ LINKS (Replikat 1) und RECHTS (Replikat 2) eintragen.
+4. Dasselbe mit YouTube wiederholen.
+5. Den Bericht teilen.
 
 ### iPhone-Schrittfolge: lokaler Videotest, dann YouTube-Vergleich
 
