@@ -47,6 +47,8 @@ struct ContentView: View {
             CalibrationSheet()
         case .playlists:
             PlaylistsView()
+        case .mirrorTest:
+            MirrorTestView()
         }
     }
 }
@@ -161,6 +163,10 @@ struct PlayerScreen: View {
             }
             ActionTile(title: "Playlists", systemImage: "music.note.list", identifier: "nav.playlists") {
                 model.sheet = .playlists
+            }
+            ActionTile(title: "Spiegeltest", systemImage: "rectangle.split.2x1", identifier: "nav.mirrorTest") {
+                linkFocused = false
+                model.sheet = .mirrorTest
             }
         }
         .padding(.horizontal, 14)

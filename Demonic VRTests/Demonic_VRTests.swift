@@ -489,3 +489,135 @@ struct MirrorClippingRegressionTests {
         #expect(close(m.right, m.layout.rightScreen))
     }
 }
+
+// MARK: - Spiegel-Vergleichstest
+
+@MainActor
+struct MirrorComparisonTests {
+    private func makeContainer(_ mode: MirrorDisplayMode, spacing: Double = -0.25, scale: Double = 0.9)
+        -> (MirrorCinemaContainer, MirrorGeometry, StereoLayout) {
+        var settings = CalibrationSettings.default
+        settings.screenScale = scale
+        settings.horizontalSpacing = spacing
+        let view = MirrorCinemaContainer(frame: CGRect(x: 0, y: 0, width: 800, height: 400))
+        view.settings = settings
+        view.mode = mode
+        let geometry = view.applyLayout(pageSize: CGSize(width: 1600, height: 900))!
+        let layout = StereoLayout.compute(container: CGSize(width: 800, height: 400),
+                                          contentAspect: 16.0 / 9.0, settings: settings)
+        return (view, geometry, layout)
+    }
+
+    private func inside(_ inner: CGRect, _ outer: CGRect) -> Bool {
+        inner.minX >= outer.minX - 0.01 && inner.maxX <= outer.maxX + 0.01 &&
+            inner.minY >= outer.minY - 0.01 && inner.maxY <= outer.maxY + 0.01
+    }
+
+    @Test func standardModePutsOriginalLeftAndReplicaRight() {
+        let (view, g, layout) = makeContainer(.originalLeft)
+        let replicator = view.layer as! CAReplicatorLayer
+        let replica = view.eyeClipView.frame.applying(CATransform3DGetAffineTransform(replicator.instanceTransform))
+        #expect(replicator.instanceCount == 2)
+        #expect(inside(view.eyeClipView.frame, layout.leftEye))   // Instanz 0 = Original = links
+        #expect(inside(replica, layout.rightEye))                 // Instanz 1 = Replikat = rechts
+        #expect(g.originalRect == view.eyeClipView.frame)
+        #expect(g.replicaRect == replica)
+        #expect(MirrorDisplayMode.originalLeft.role(leftHalf: true) == "Original-WebView")
+        #expect(MirrorDisplayMode.originalLeft.role(leftHalf: false) == "Replikat (CAReplicatorLayer)")
+    }
+
+    @Test(arguments: [-0.25, 0.0, 0.25])
+    func swappedModePutsOriginalRightAndReplicaLeft(_ spacing: Double) {
+        let (view, g, layout) = makeContainer(.originalRight, spacing: spacing)
+        let replicator = view.layer as! CAReplicatorLayer
+        let replica = view.eyeClipView.frame.applying(CATransform3DGetAffineTransform(replicator.instanceTransform))
+        #expect(replicator.instanceCount == 2)
+        #expect(inside(view.eyeClipView.frame, layout.rightEye))
+        #expect(inside(replica, layout.leftEye))
+        #expect(!view.eyeClipView.frame.intersects(replica))
+        // Quelle füllt die rechte Leinwand.
+        let mapped = view.stageView.convert(g.sourceRect, to: view)
+        #expect(abs(mapped.minX - layout.rightScreen.minX) < 0.01)
+        #expect(abs(mapped.width - layout.rightScreen.width) < 0.01)
+        #expect(MirrorDisplayMode.originalRight.role(leftHalf: true) == "Replikat (CAReplicatorLayer)")
+    }
+
+    @Test func originalOnlyModeHasNoReplica() {
+        let (view, g, layout) = makeContainer(.originalOnly)
+        let replicator = view.layer as! CAReplicatorLayer
+        #expect(replicator.instanceCount == 1)
+        #expect(g.instanceCount == 1)
+        #expect(inside(view.eyeClipView.frame, layout.leftEye))
+        // Ohne Replikat wird nur an der eigenen Augenhälfte beschnitten.
+        #expect(abs(view.eyeClipView.frame.minX - layout.leftScreen.minX) < 0.01)
+    }
+
+    @Test func localTestPageIsClassifiedAndAllowed() {
+        let page = URL(fileURLWithPath: "/var/containers/Bundle/Application/X/Demonic VR.app/MirrorTestPage.html")
+        #expect(PlayerController.classify(page, embedVideoID: nil) == .localVideoTest)
+        #expect(PlayerController.classify(URL(fileURLWithPath: "/tmp/other.html"), embedVideoID: nil) == .other)
+        #expect(SourcePolicy.evaluate(.localVideoTest, acknowledged: false) == .allowed)
+        let root = URL(fileURLWithPath: "/app/Demonic VR.app")
+        #expect(PlayerController.isBundleFile(URL(fileURLWithPath: "/app/Demonic VR.app/MirrorTestPage.html"), bundleRoot: root))
+        #expect(!PlayerController.isBundleFile(URL(fileURLWithPath: "/app/Demonic VR.app2/x.html"), bundleRoot: root))
+        #expect(!PlayerController.isBundleFile(URL(fileURLWithPath: "/etc/passwd"), bundleRoot: root))
+    }
+
+    @Test func testPageAndVideoAreBundled() throws {
+        let page = try #require(PlayerController.localMirrorTestPage)
+        let html = try String(contentsOf: page, encoding: .utf8)
+        #expect(html.contains("<video"))
+        #expect(html.contains("playsinline"))
+        #expect(html.contains("MirrorTestVideo.mp4"))
+        let video = page.deletingLastPathComponent().appendingPathComponent("MirrorTestVideo.mp4")
+        #expect(FileManager.default.fileExists(atPath: video.path))
+    }
+
+    @Test func reportContainsRequiredFieldsAndNoSecrets() {
+        let session = MirrorTestSession()
+        var status = PlaybackStatus()
+        status.hasVideo = true
+        status.currentTime = 3
+        status.videoSize = CGSize(width: 1280, height: 720)
+        session.mode = .originalLeft
+        session.begin(source: .localVideoTest, calibration: .default, status: status,
+                      webViewSize: CGSize(width: 402, height: 640))
+        session.updateGeometry(MirrorGeometry(containerSize: CGSize(width: 874, height: 402),
+                                              pageSize: CGSize(width: 402, height: 640),
+                                              videoRect: CGRect(x: 0, y: 48, width: 402, height: 226),
+                                              sourceRect: CGRect(x: 0, y: 48, width: 402, height: 226),
+                                              originalRect: CGRect(x: 21, y: 78, width: 393, height: 221),
+                                              replicaRect: CGRect(x: 458, y: 78, width: 393, height: 221),
+                                              instanceCount: 2))
+        let run = session.currentRun!
+        session.setObservation(runID: run.id, leftHalf: true, video: .black, overlay: .visible)
+        session.setObservation(runID: run.id, leftHalf: false, video: .visibleMoving, overlay: .visible)
+        status.currentTime = 9
+        session.finish(status: status)
+
+        let env = ReportEnvironment(appVersion: "1.0", build: "1", systemName: "iOS",
+                                    systemVersion: "26.2", deviceModel: "iPhone18,1")
+        let report = session.report(environment: env)
+        for expected in ["Demonic VR 1.0 (Build 1)", "iOS 26.2", "Lokales Testvideo", "Original links · Replikat rechts",
+                         "Kalibrierung: Größe 90 %", "WebView-Größe: 402×640 pt", "Erkanntes Videorechteck",
+                         "MANUELL LINKS:  Video: Videobild schwarz", "MANUELL RECHTS: Video: Videobild sichtbar und bewegt",
+                         "replizierte Instanz", "bestätigt keine sichtbare Videowiedergabe"] {
+            #expect(report.contains(expected), "fehlt: \(expected)")
+        }
+        for forbidden in ["http", "cookie", "Cookie", "token", "Token", "file://"] {
+            #expect(!report.contains(forbidden), "darf nicht enthalten: \(forbidden)")
+        }
+    }
+
+    @Test func assessmentNeverClaimsDRM() {
+        var run = MirrorTestRun(startedAt: Date(), source: .youtubeSite, mode: .originalLeft,
+                                calibration: .default, videoNaturalSize: .zero)
+        run.left.video = .black
+        run.right.video = .visibleMoving
+        let text = MirrorDiagnosticReport.assessment(run)
+        #expect(text.contains("replizierte Instanz"))
+        #expect(text.contains("keinen Inhaltsschutz"))
+        run.mode = .originalRight
+        #expect(MirrorDiagnosticReport.assessment(run).contains("Original-Instanz"))
+    }
+}

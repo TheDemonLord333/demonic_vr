@@ -326,6 +326,10 @@ struct DiagnosticsView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!mirror.ready)
                     .accessibilityIdentifier("gate.startMirror")
+                    Button("Spiegel-Vergleichstest mit lokalem Video …") {
+                        model.sheet = .mirrorTest
+                    }
+                    .accessibilityIdentifier("gate.mirrorTest")
                 }
             }
         } header: {
