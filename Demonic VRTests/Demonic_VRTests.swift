@@ -685,3 +685,36 @@ struct MirrorDeviceFindingsTests {
         #expect(MirrorDiagnosticReport.assessment(run).contains("beiden Replikaten"))
     }
 }
+
+// MARK: - Brillentaste und Wiedergabesteuerung
+
+@MainActor
+struct HeadsetButtonTests {
+    @Test func zoneSitsOnTheCenterLineOverFullHeight() {
+        let size = CGSize(width: 874, height: 402)
+        let zone = HeadsetButtonZone.zone(in: size)
+        #expect(zone.width == 72)
+        #expect(zone.height == size.height)
+        #expect(abs(zone.midX - size.width / 2) < 0.001)
+    }
+
+    @Test func zoneDoesNotCoverMirroredScreensBeyondItsStrip() {
+        // Standard-Kalibrierung: Die Leinwände enden vor dem Streifen bzw. nur knapp darin.
+        let size = CGSize(width: 874, height: 402)
+        let layout = StereoLayout.compute(container: size, contentAspect: 16.0 / 9.0, settings: .default)
+        let zone = HeadsetButtonZone.zone(in: size)
+        #expect(layout.leftScreen.maxX - zone.minX < 36)
+        #expect(zone.maxX - layout.rightScreen.minX < 36)
+    }
+
+    @Test func playbackScriptUsesOnlyDocumentedControls() {
+        let toggle = PlayerController.playbackScript(.toggle)
+        #expect(toggle.contains("('toggle')"))
+        #expect(toggle.contains("pauseVideo"))      // IFrame Player API
+        #expect(toggle.contains("best.pause()"))    // HTMLMediaElement
+        let seek = PlayerController.playbackScript(.seek(seconds: -10))
+        #expect(seek.contains("('seek:-10.0')"))
+        #expect(!seek.contains(".src"))
+        #expect(!seek.contains("currentSrc"))
+    }
+}

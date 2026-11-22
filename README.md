@@ -239,6 +239,26 @@ allein belegt **keinen** Inhaltsschutz.
   Videorechteck, sichtbare Bereiche von Original und Replikat) steht jetzt im
   Diagnosebericht.
 
+### Bedienung in Cardboard: Brillentaste und Wiedergabeknöpfe
+
+- **Das Replikat ist nicht bedienbar.** Ein `CAReplicatorLayer` erzeugt nur ein
+  Bild der WebView, keine zweite Ansicht. Berührungen erreichen nur die
+  Original-Instanz. Sie aus dem Replikat an die WebView weiterzureichen, ginge
+  nur über synthetische Touches, und dafür gibt es keine öffentliche API.
+- **Brillentaste:** Viele Cardboard-Brillen haben eine mechanische Taste, die
+  mittig zwischen den Linsen auf die Trennlinie des Bildschirms drückt. In allen
+  Cardboard-Modi mit Web-Video (Snapshot und Spiegel) liegt dort ein 72 pt
+  breiter, unsichtbarer Tastbereich über die volle Höhe. Er schaltet
+  Wiedergabe/Pause um. Die Rückmeldung („Pause“, „Wiedergabe“ oder „Kein
+  Video“) erscheint in **beiden** Augen. In der nativen Referenzszene blendet
+  ein Tipp wie bisher die Bedienleiste ein oder aus.
+- **Bedienleiste:** „−10 s“, „⏯“ und „+10 s“ steuern das sichtbare Video der
+  Seite, unabhängig davon, auf welcher Seite das Original liegt.
+- **Technik:** Gesteuert wird über dokumentierte Funktionen: beim
+  `HTMLMediaElement` `play()`, `pause()` und `currentTime`, beim IFrame-Player
+  `playVideo`, `pauseVideo` und `seekTo`. Das entspricht einem Tipp auf die
+  Bedienelemente. Stream-URLs werden nicht gelesen.
+
 ### Spiegel-Vergleichstest
 
 Erreichbar über die Kachel „Spiegeltest“ in der Startansicht oder über die
@@ -412,6 +432,8 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
 2. „Testseite in der WebView laden“ wählen, Anordnung „Zwei Replikate ·
    Original verborgen“, dann „Spiegel starten – lokales Video“.
 3. Über „Beobachtung“ LINKS (Replikat 1) und RECHTS (Replikat 2) eintragen.
+   Dabei die Brillentaste testen: Sie sollte Pause und Wiedergabe umschalten,
+   und die Rückmeldung muss in beiden Augen erscheinen.
 4. Dasselbe mit YouTube wiederholen.
 5. Den Bericht teilen.
 
