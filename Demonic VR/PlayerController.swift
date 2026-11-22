@@ -17,6 +17,8 @@ nonisolated enum PlayerPageKind: Equatable, Sendable {
     case blank
     case youtubeSite
     case embed(videoID: String)
+    /// Mitgelieferte Spiegeltest-Seite mit lokalem HTML-<video> (MirrorTestPage.html).
+    case localVideoTest
     case other
 }
 
@@ -147,6 +149,8 @@ final class PlayerController: NSObject {
     @ObservationIgnored weak var homeContainer: WebViewContainer?
     /// `true`, solange der Spiegel-Modus die WebView anzeigt.
     @ObservationIgnored private(set) var isWebViewLent = false
+    /// Nur während einer Spiegel-Sitzung darf MirrorCinemaView die WebView übernehmen.
+    @ObservationIgnored var mirrorSessionActive = false
     @ObservationIgnored private let startURL: URL?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var embedVideoID: String?
@@ -155,6 +159,12 @@ final class PlayerController: NSObject {
     private enum PendingLoad {
         case url(URL)
         case embed(videoID: String, start: Int)
+        case localFile(URL)
+    }
+
+    /// Lokale Spiegeltest-Seite im App-Bundle (lädt MirrorTestVideo.mp4).
+    static var localMirrorTestPage: URL? {
+        Bundle.main.url(forResource: "MirrorTestPage", withExtension: "html")
     }
 
     /// Kennung der WebView, sobald sie existiert (beobachtbar für die Anzeige).
@@ -183,6 +193,7 @@ final class PlayerController: NSObject {
         switch pageKind {
         case .youtubeSite: return .youtubeSite
         case .embed: return .youtubeEmbed
+        case .localVideoTest: return .localVideoTest
         case .other: return .otherWeb
         case .blank: return .none
         }
@@ -237,6 +248,7 @@ final class PlayerController: NSObject {
             switch pending {
             case .url(let url): webView.load(URLRequest(url: url))
             case .embed(let videoID, let start): loadEmbedPage(in: webView, videoID: videoID, start: start)
+            case .localFile(let url): loadBundleFile(url, in: webView)
             }
         }
         return webView
@@ -326,6 +338,41 @@ final class PlayerController: NSObject {
         }
     }
 
+    // MARK: - Lokaler Spiegeltest
+
+    /// Lädt die mitgelieferte Testseite mit lokalem, ungeschütztem HTML-<video> in dieselbe WebView.
+    /// Die YouTube-Seite wird dabei verlassen (Cookies/Anmeldung bleiben im Datenspeicher erhalten);
+    /// zurück geht es über „Zurück“ oder „YouTube“.
+    @discardableResult
+    func loadLocalMirrorTest() -> Bool {
+        guard let url = Self.localMirrorTestPage else {
+            issue = PlayerIssue(title: "Testseite fehlt",
+                                message: "MirrorTestPage.html ist nicht im App-Bundle.",
+                                actions: [.dismiss])
+            return false
+        }
+        issue = nil
+        embedVideoID = nil
+        lastRequestedURL = url
+        if let webView {
+            loadBundleFile(url, in: webView)
+        } else {
+            pendingLoad = .localFile(url)
+        }
+        return true
+    }
+
+    private func loadBundleFile(_ url: URL, in webView: WKWebView) {
+        webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+    }
+
+    /// Nur Dateien aus dem App-Bundle dürfen als file:// geladen werden.
+    nonisolated static func isBundleFile(_ url: URL, bundleRoot: URL?) -> Bool {
+        guard url.isFileURL, let root = bundleRoot?.standardizedFileURL.path else { return false }
+        let path = url.standardizedFileURL.path
+        return path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+
     // MARK: - Spiegel-Modus
 
     /// Der Spiegel-Modus übernimmt dieselbe WebView-Instanz (kein Neuladen).
@@ -348,7 +395,9 @@ final class PlayerController: NSObject {
         case .allowed: break
         }
         guard status.hasVideo, now.timeIntervalSince(status.updatedAt) < 3 else {
-            return (false, "Kein Video auf der Seite erkannt. Video in der YouTube-Ansicht öffnen.")
+            return (false, sourceKind == .localVideoTest
+                    ? "Testvideo noch nicht erkannt – kurz warten oder „Play“ auf der Testseite antippen."
+                    : "Kein Video auf der Seite erkannt. Video in der YouTube-Ansicht öffnen.")
         }
         guard !status.isPaused else {
             return (false, "Video ist pausiert. Bitte starten, dann Cardboard öffnen.")
@@ -411,6 +460,9 @@ final class PlayerController: NSObject {
     static func classify(_ url: URL?, embedVideoID: String?) -> PlayerPageKind {
         guard let url, let scheme = url.scheme?.lowercased() else { return .blank }
         if scheme == "about" { return .blank }
+        if url.isFileURL {
+            return url.lastPathComponent == "MirrorTestPage.html" ? .localVideoTest : .other
+        }
         let host = url.host?.lowercased() ?? ""
         if host == embedOrigin.host?.lowercased() {
             return embedVideoID.map { .embed(videoID: $0) } ?? .other
@@ -537,6 +589,9 @@ extension PlayerController: WKNavigationDelegate, WKUIDelegate {
             return .cancel
         }
         // App-Links (youtube://, intent:// …) bleiben draußen; alles läuft in derselben WebView.
+        if scheme == "file" {
+            return Self.isBundleFile(url, bundleRoot: Bundle.main.resourceURL) ? .allow : .cancel
+        }
         return ["http", "https", "about", "blob", "data"].contains(scheme) ? .allow : .cancel
     }
 

@@ -131,6 +131,35 @@ final class Demonic_VRUITests: XCTestCase {
     }
 
     @MainActor
+    func testLocalVideoMirrorRunLabelsHalvesAndReports() throws {
+        let app = launchApp()
+        XCTAssertTrue(app.buttons["nav.mirrorTest"].waitForExistence(timeout: 10))
+        app.buttons["nav.mirrorTest"].tap()
+
+        app.buttons["mirror.loadLocal"].tap()
+        let start = app.buttons["mirror.startLocal"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        let enabled = expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: start)
+        wait(for: [enabled], timeout: 20)
+        start.tap()
+
+        let left = app.staticTexts["cardboard.half.left"]
+        XCTAssertTrue(left.waitForExistence(timeout: 10))
+        XCTAssertTrue(left.label.contains("LINKE HÄLFTE"))
+        XCTAssertTrue(left.label.contains("Original-WebView"))
+        XCTAssertTrue(app.staticTexts["cardboard.half.right"].label.contains("Replikat"))
+
+        app.buttons["cardboard.exit"].tap()
+        XCTAssertTrue(app.staticTexts["app.title"].waitForExistence(timeout: 5))
+
+        app.buttons["nav.mirrorTest"].tap()
+        let report = app.staticTexts["mirror.report"]
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
+        XCTAssertTrue(report.label.contains("Lokales Testvideo"))
+        app.buttons["sheet.done"].tap()
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         measure(metrics: [XCTApplicationLaunchMetric()]) {
             let app = XCUIApplication()

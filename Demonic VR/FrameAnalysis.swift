@@ -294,6 +294,8 @@ nonisolated enum FrameSourceKind: String, Equatable, Sendable {
     case reference
     case youtubeSite
     case youtubeEmbed
+    /// Mitgeliefertes, selbst erzeugtes Testvideo in einem HTML-<video> der WebView.
+    case localVideoTest
     case otherWeb
     case none
 
@@ -302,6 +304,7 @@ nonisolated enum FrameSourceKind: String, Equatable, Sendable {
         case .reference: return "Referenzszene (lokal)"
         case .youtubeSite: return "YouTube-Ansicht"
         case .youtubeEmbed: return "YouTube IFrame-Player"
+        case .localVideoTest: return "Lokales Testvideo (HTML-<video>)"
         case .otherWeb: return "Andere Webseite"
         case .none: return "Keine Quelle"
         }
@@ -325,7 +328,8 @@ nonisolated enum SourcePolicy {
 
     static func evaluate(_ kind: FrameSourceKind, acknowledged: Bool) -> SourcePolicyVerdict {
         switch kind {
-        case .reference:
+        case .reference, .localVideoTest:
+            // Eigene, selbst erzeugte Inhalte ohne Vorgaben Dritter.
             return .allowed
         case .youtubeSite:
             return acknowledged ? .allowed : .needsAcknowledgement

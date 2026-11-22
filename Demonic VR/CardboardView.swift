@@ -19,20 +19,21 @@ struct CardboardView: View {
     @State private var controlsVisible = true
     @State private var calibrationVisible = false
     @State private var hideTask: Task<Void, Never>?
-    @State private var mirrorConfirmed = false
+    @State private var observationVisible = false
 
     private var frame: VideoFrame? {
         switch source {
         case .reference: return model.reference.frame
         case .youtube: return model.snapshot.latest
-        case .youtubeMirror: return nil
+        case .youtubeMirror, .localVideoMirror: return nil
         }
     }
 
     private var counterText: String {
-        if source == .youtubeMirror {
+        if source.isMirror {
+            // Nur Information: Die Player-Zeit belegt keine sichtbare Wiedergabe.
             let status = model.player.status
-            return "\(TimeFormatter.clock(status.currentTime)) \(status.isPaused ? "pausiert" : "läuft")"
+            return "Player-Zeit \(TimeFormatter.clock(status.currentTime)) (\(status.isPaused ? "pausiert" : "läuft")) · \(model.mirrorTest.mode.title)"
         }
         return "Frame \(frame?.sequence ?? 0)"
     }
@@ -41,12 +42,18 @@ struct CardboardView: View {
         ZStack {
             Color.black
 
-            if source == .youtubeMirror {
+            if source.isMirror {
                 // Keine SwiftUI-Geste über der WebView: Die Leiste wird über die Eck-Taste gesteuert.
                 MirrorCinemaView(player: model.player,
                                  settings: model.calibration.settings,
-                                 status: model.player.status)
+                                 mode: model.mirrorTest.mode,
+                                 status: model.player.status,
+                                 onGeometry: { geometry in
+                                     model.mirrorTest.updateGeometry(geometry)
+                                     model.mirrorTest.updateCalibration(model.calibration.settings)
+                                 })
                     .accessibilityIdentifier("cardboard.mirror")
+                HalfLabels(mode: model.mirrorTest.mode)
             } else {
                 StereoCinemaView(frame: frame, settings: model.calibration.settings)
                     .contentShape(Rectangle())
@@ -62,10 +69,10 @@ struct CardboardView: View {
                 }
             }
 
-            if source == .youtubeMirror && !mirrorConfirmed {
-                MirrorCheckPanel(
-                    onConfirm: { mirrorConfirmed = true; scheduleHide() },
-                    onDiagnostics: { model.exitCardboard(then: .diagnostics) },
+            if source.isMirror && observationVisible {
+                MirrorObservationPanel(
+                    onClose: { observationVisible = false },
+                    onReport: { model.exitCardboard(then: .mirrorTest) },
                     onExit: { model.exitCardboard() }
                 )
             }
@@ -155,6 +162,16 @@ struct CardboardView: View {
 
             Spacer()
 
+            if source.isMirror {
+                Button {
+                    observationVisible.toggle()
+                } label: {
+                    Label("Beobachtung", systemImage: "eye")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("cardboard.observation")
+            }
+
             if source == .reference {
                 Toggle("Aussetzer", isOn: Binding(
                     get: { model.reference.simulateDropouts },
@@ -180,6 +197,16 @@ struct CardboardView: View {
             }
             .buttonStyle(.bordered)
             .accessibilityIdentifier("cardboard.diagnostics")
+
+            Button {
+                hideTask?.cancel()
+                withAnimation { controlsVisible = false }
+            } label: {
+                Label("Ausblenden", systemImage: "chevron.up")
+            }
+            .buttonStyle(.bordered)
+            .labelStyle(.iconOnly)
+            .accessibilityIdentifier("cardboard.hideControls")
         }
         .labelStyle(.titleAndIcon)
         .padding(.horizontal, 16)
@@ -217,7 +244,8 @@ struct CardboardView: View {
     private func scheduleHide() {
         hideTask?.cancel()
         guard !model.environment.isUITest else { return }
-        if source == .youtubeMirror && !mirrorConfirmed { return }
+        // Im Spiegeltest bleibt die Leiste, bis sie bewusst ausgeblendet wird.
+        if source.isMirror { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled, !calibrationVisible else { return }
@@ -226,35 +254,97 @@ struct CardboardView: View {
     }
 }
 
-/// Ob die Videoebene mitgespiegelt wird, kann nur das Auge prüfen.
-private struct MirrorCheckPanel: View {
-    let onConfirm: () -> Void
-    let onDiagnostics: () -> Void
+/// Eindeutige, NICHT replizierte Beschriftung der Bildschirmhälften (SwiftUI-Ebene über dem Spiegel).
+private struct HalfLabels: View {
+    let mode: MirrorDisplayMode
+
+    var body: some View {
+        HStack(spacing: 0) {
+            label(left: true)
+            label(left: false)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func label(left: Bool) -> some View {
+        Text("\(left ? "LINKE HÄLFTE" : "RECHTE HÄLFTE") · \(mode.role(leftHalf: left))")
+            .font(.caption2.bold())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(left ? Color.orange.opacity(0.85) : Color.cyan.opacity(0.85), in: Capsule())
+            .foregroundStyle(.black)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, 10)
+            .accessibilityIdentifier(left ? "cardboard.half.left" : "cardboard.half.right")
+    }
+}
+
+/// Manuelle Sichtprüfung je Bildschirmhälfte für den laufenden Spiegel-Durchlauf.
+private struct MirrorObservationPanel: View {
+    @Environment(AppModel.self) private var model
+    let onClose: () -> Void
+    let onReport: () -> Void
     let onExit: () -> Void
 
     var body: some View {
         VStack(spacing: 10) {
-            Label("Spiegel-Modus prüfen", systemImage: "eye.trianglebadge.exclamationmark")
-                .font(.headline)
-            Text("Läuft das Video in beiden Augen gleich? Wenn ein Auge schwarz oder eingefroren ist, spiegelt iOS die Videoebene auf diesem Gerät nicht.")
-                .font(.caption)
+            Text("Manuelle Beobachtung – was siehst du in jeder Hälfte? (Die Player-Zeit zählt nicht als Nachweis.)")
+                .font(.caption.bold())
                 .multilineTextAlignment(.center)
+            if let run = model.mirrorTest.currentRun {
+                HStack(alignment: .top, spacing: 12) {
+                    MirrorObservationColumn(run: run, leftHalf: true)
+                    MirrorObservationColumn(run: run, leftHalf: false)
+                }
+            }
             HStack {
-                Button("Ja, beide Augen", action: onConfirm)
+                Button("Schließen", action: onClose)
+                    .buttonStyle(.bordered)
+                Button("Bericht", action: onReport)
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("cardboard.observation.report")
+                Button("Zum Player", action: onExit)
                     .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("cardboard.mirror.confirm")
-                Button("Diagnose", action: onDiagnostics)
-                    .buttonStyle(.bordered)
-                Button("Nein – zum Player", action: onExit)
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("cardboard.mirror.exit")
+                    .accessibilityIdentifier("cardboard.observation.exit")
             }
         }
         .padding(14)
-        .frame(maxWidth: 460)
+        .frame(maxWidth: 620)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .frame(maxHeight: .infinity, alignment: .bottom)
-        .padding(.bottom, 16)
+        .accessibilityIdentifier("cardboard.observation.panel")
+    }
+}
+
+/// Auswahl für eine Bildschirmhälfte (auch in der Testübersicht verwendet).
+struct MirrorObservationColumn: View {
+    @Environment(AppModel.self) private var model
+    let run: MirrorTestRun
+    let leftHalf: Bool
+
+    var body: some View {
+        let half = leftHalf ? run.left : run.right
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(leftHalf ? "LINKS" : "RECHTS") · \(run.mode.role(leftHalf: leftHalf))")
+                .font(.caption.bold())
+                .foregroundStyle(leftHalf ? Color.orange : Color.cyan)
+            Picker("Video \(leftHalf ? "links" : "rechts")", selection: Binding(
+                get: { half.video },
+                set: { model.mirrorTest.setObservation(runID: run.id, leftHalf: leftHalf, video: $0) }
+            )) {
+                ForEach(VideoObservation.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier(leftHalf ? "obs.left.video" : "obs.right.video")
+            Picker("Oberfläche \(leftHalf ? "links" : "rechts")", selection: Binding(
+                get: { half.overlay },
+                set: { model.mirrorTest.setObservation(runID: run.id, leftHalf: leftHalf, overlay: $0) }
+            )) {
+                ForEach(OverlayObservation.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier(leftHalf ? "obs.left.overlay" : "obs.right.overlay")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

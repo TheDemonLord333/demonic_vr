@@ -15,16 +15,22 @@ nonisolated enum CardboardSource: String, Equatable, Sendable {
     case reference
     /// YouTube über WebKit-Snapshots (Bildkopie, Diagnose möglich).
     case youtube
-    /// YouTube über CAReplicatorLayer (keine Bildkopie, Ebene wird gespiegelt).
+    /// YouTube über CAReplicatorLayer (keine Bildkopie, Ebene wird repliziert).
     case youtubeMirror
+    /// Lokales Testvideo (HTML-<video>) über denselben Spiegel-Weg wie YouTube.
+    case localVideoMirror
 
     var title: String {
         switch self {
-        case .reference: return "Referenzszene"
+        case .reference: return "Referenzszene (nativ)"
         case .youtube: return "YouTube · Snapshot (experimentell)"
         case .youtubeMirror: return "YouTube · Spiegel (experimentell)"
+        case .localVideoMirror: return "Lokales Testvideo · Spiegel (Test)"
         }
     }
+
+    /// Nutzt die echte WebView über MirrorCinemaView/CAReplicatorLayer.
+    var isMirror: Bool { self == .youtubeMirror || self == .localVideoMirror }
 }
 
 nonisolated struct AppEnvironment: Sendable {
@@ -47,6 +53,7 @@ final class AppModel {
         case cardboardCheck
         case calibration
         case playlists
+        case mirrorTest
 
         var id: String { rawValue }
     }
@@ -57,6 +64,7 @@ final class AppModel {
     let snapshot: SnapshotEngine
     let reference: ReferenceScene
     let google: GoogleAccountSession
+    let mirrorTest = MirrorTestSession()
 
     var screen: Screen = .player
     var sheet: Sheet?
@@ -121,10 +129,22 @@ final class AppModel {
 
     @discardableResult
     func startYouTubeMirrorCardboard() -> Bool {
-        guard player.mirrorReadiness(acknowledged: youtubeCardboardAcknowledged).ready else { return false }
+        guard player.sourceKind == .youtubeSite,
+              player.mirrorReadiness(acknowledged: youtubeCardboardAcknowledged).ready else { return false }
         snapshot.stop()
         sheet = nil
         enterCardboard(.youtubeMirror)
+        return true
+    }
+
+    /// Lokaler Vergleichstest: dieselbe WebView, derselbe Spiegel-Weg, eigenes ungeschütztes Video.
+    @discardableResult
+    func startLocalVideoMirrorCardboard() -> Bool {
+        guard player.sourceKind == .localVideoTest,
+              player.mirrorReadiness(acknowledged: false).ready else { return false }
+        snapshot.stop()
+        sheet = nil
+        enterCardboard(.localVideoMirror)
         return true
     }
 
@@ -139,12 +159,25 @@ final class AppModel {
     private func enterCardboard(_ source: CardboardSource) {
         continuityStart = player.continuityMark()
         continuity = nil
+        if source.isMirror {
+            player.mirrorSessionActive = true
+            mirrorTest.begin(source: player.sourceKind,
+                             calibration: calibration.settings,
+                             status: player.status,
+                             webViewSize: player.webView?.bounds.size)
+        }
         screen = .cardboard(source)
     }
 
     func exitCardboard(then nextSheet: Sheet? = nil) {
         snapshot.stop()
         reference.stop()
+        if case .cardboard(let source) = screen, source.isMirror {
+            mirrorTest.finish(status: player.status)
+        }
+        // Erst die Übernahme sperren, dann zurückgeben – sonst holt sich die noch
+        // sichtbare Spiegel-Ansicht die WebView beim nächsten Update zurück.
+        player.mirrorSessionActive = false
         player.returnWebViewHome()
         screen = .player
         if let nextSheet { sheet = nextSheet }
@@ -162,7 +195,7 @@ final class AppModel {
         switch source {
         case .reference: reference.start()
         case .youtube: snapshot.startCardboardStream()
-        case .youtubeMirror: break
+        case .youtubeMirror, .localVideoMirror: break
         }
     }
 
@@ -170,7 +203,9 @@ final class AppModel {
         switch source {
         case .reference: reference.stop()
         case .youtube: snapshot.stop()
-        case .youtubeMirror: player.returnWebViewHome()
+        case .youtubeMirror, .localVideoMirror:
+            player.mirrorSessionActive = false
+            player.returnWebViewHome()
         }
     }
 

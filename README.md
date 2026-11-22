@@ -36,6 +36,9 @@ dafür nicht nötig.
 | `Calibration.swift`, `CalibrationView.swift` | Kalibrierung, gespeichert in `UserDefaults` |
 | `DiagnosticsView.swift` | Einzelbild- und Live-Test, Cardboard-Freigabe |
 | `GoogleAccount.swift`, `PlaylistsView.swift` | Optionale Playlist-Ansicht (Google-OAuth + YouTube Data API) |
+| `MirrorCinemaView.swift` | Experimenteller Spiegel-Weg (echte WebView + `CAReplicatorLayer`), Anordnungen für den Vergleich |
+| `MirrorTest.swift`, `MirrorTestView.swift` | Spiegel-Vergleichstest, manuelle Beobachtungen, Diagnosebericht |
+| `MirrorTestPage.html`, `MirrorTestVideo.mp4` | Lokale Testseite mit selbst erzeugtem, ungeschütztem Testvideo |
 
 Der sichtbare Name ist auf dem Home-Bildschirm und in der App „Demonic VR“
 (`INFOPLIST_KEY_CFBundleDisplayName`).
@@ -189,10 +192,96 @@ ist **noch nicht geprüft**.
   Pixel gelesen und keine Stream-URLs verwendet.
 - Start nur mit bestätigten Hinweisen und laufendem Video in der
   YouTube-Ansicht.
-- Nach dem Start ist eine **Sichtprüfung beider Augen** nötig: „Ja, beide
-  Augen“, „Diagnose“ oder „Nein – zum Player“.
+- Nach dem Start ist eine **Sichtprüfung je Bildschirmhälfte** nötig. Sie wird
+  über „Beobachtung“ in der Bedienleiste als manuelle Angabe erfasst (siehe
+  Vergleichstest).
 - Beim Verlassen kehrt die WebView ohne Neuladen an ihren Platz zurück. Die
   Statuszeile zeigt dann den Sitzungsvergleich.
+
+**Gerätebeobachtung mit YouTube (iPhone 17 Pro, manuell):**
+
+- Videobild nur **rechts**, links schwarz.
+- YouTube-Bedienelemente (Play/Pause, Spulen, Fortschrittsleiste) auf **beiden**
+  Seiten.
+- Im normalen Player ist das Video sichtbar und bedienbar.
+
+**Zuordnung im Code geprüft:** Instanz 0 ist die echte WebView, das Original. Im
+Standardmodus liegt sie in der linken Bildschirmhälfte (`eyeClip` in
+`leftEye`). Instanz 1 ist die Kopie des `CAReplicatorLayer`, verschoben in die
+rechte Hälfte. Links und rechts sind UIKit-Koordinaten im Querformat, also die
+Hälften aus Sicht des Betrachtenden. Code und Beobachtung widersprechen sich
+also nicht: Das Videobild erschien nur in der **replizierten** Instanz, die
+HTML-Oberfläche in beiden. Warum, ist offen. Eine Vermutung ist, dass WebKit
+das Video als eigene, vom Render-Server eingebettete Ebene darstellt, die nur
+an einer Stelle erscheinen kann. Das ist nicht bestätigt. Ein schwarzes Bild
+allein belegt **keinen** Inhaltsschutz.
+
+**Weitere Prüfung des Spiegel-Codes:**
+
+- *Clipping, Transformationen, Ebenenreihenfolge:* Beide Instanzen teilen
+  denselben Ebenenbaum (`eyeClip` → `stage` → WebView). Eine Skalierung oder
+  Beschneidung, die nur das Original betrifft, gibt es nicht. Das Replikat
+  wird nach dem Original gezeichnet. Ein Fehler, der nur eine Hälfte schwärzt,
+  war im Code nicht nachweisbar.
+- *Übernahme und Rückgabe der WebView:* Hier gab es einen **konkreten
+  Fehler**, der jetzt behoben ist. `exitCardboard` gab die WebView zurück,
+  während die Spiegel-Ansicht noch sichtbar war. Deren nächstes `updateUIView`
+  (bei jeder Statusmeldung) übernahm die WebView wieder, und erst
+  `dismantleUIView` gab sie endgültig zurück. Beim Verlassen wurde die WebView
+  also mehrfach umgehängt. Jetzt erlaubt `PlayerController.mirrorSessionActive`
+  die Übernahme nur während einer Spiegel-Sitzung, und es wird vor der Rückgabe
+  gesperrt. Ob dieser Fehler das einseitige Bild verursacht hat, ist nicht
+  belegt: Er betraf nur das Verlassen.
+- *Querformat-Wechsel:* Die WebView behält bei der Übernahme ihre Größe. Die
+  Seite bricht also nicht neu um, und das gemeldete Videorechteck bleibt in
+  Seitenkoordinaten gültig. Der Container passt sich bei jeder Größenänderung
+  in `layoutSubviews` neu an. Die tatsächliche Geometrie (WebView-Größe,
+  Videorechteck, sichtbare Bereiche von Original und Replikat) steht jetzt im
+  Diagnosebericht.
+
+### Spiegel-Vergleichstest
+
+Erreichbar über die Kachel „Spiegeltest“ in der Startansicht oder über die
+Cardboard-Prüfung.
+
+- **Lokales Testvideo:** `Demonic VR/MirrorTestVideo.mp4` ist selbst erzeugt
+  (ffmpeg `testsrc2`, magenta Balken, eingebrannter Text „VIDEO-EBENE FRAME n“).
+  Es ist ein ungeschütztes H.264-Video ohne Ton, 1280×720, 10 s in Schleife.
+  `Demonic VR/MirrorTestPage.html` spielt es in **derselben** WebView über ein
+  echtes `<video playsinline>` ab. Sichtbare HTML-Oberfläche liegt auch **über**
+  dem Videorechteck: türkiser Rahmen, „HTML-OVERLAY · rAF #n“, roter
+  Fortschrittsbalken und der Knopf „HTML ⏯“. Damit gleicht der Aufbau der
+  YouTube-Seite. Die Quelle läuft durch denselben
+  `MirrorCinemaView`-/`CAReplicatorLayer`-Weg wie YouTube, mit Übernahme der
+  WebView, Videoausschnitt, Kalibrierung und Rückkehr.
+- **Anordnung:** „Original links · Replikat rechts“ (Standard), „Original
+  rechts · Replikat links“ (trennt Bildschirmhälfte von Instanz) oder „Nur
+  Original links · ohne Replikat“ (zeigt, ob die WebView ohne Replikation Video
+  zeigt). In Cardboard ist jede Hälfte unten beschriftet, etwa „LINKE HÄLFTE ·
+  Original-WebView“. Diese Beschriftung liegt über dem Spiegel und wird nicht
+  repliziert.
+- **Manuelle Beobachtung je Hälfte:** Videobild sichtbar und bewegt, sichtbar
+  aber eingefroren, schwarz, oder nicht erfasst. Dazu getrennt, ob die
+  HTML-Oberfläche bzw. die Bedienelemente sichtbar sind. Die Angaben sind als
+  manuell gekennzeichnet. Die Player-Zeit gilt ausdrücklich nicht als Nachweis.
+- **Diagnosebericht** zum Kopieren oder Teilen. Er enthält:
+  - App- und Build-Version, iOS-Version und Gerätekennung
+  - Testquelle, Anordnung und Kalibrierung
+  - WebView-Größe, erkanntes Videorechteck und sichtbare Bereiche von Original
+    und Replikat
+  - die manuellen Befunde für links und rechts und eine vorsichtige Einordnung
+
+  URLs, Cookies, Tokens und Zugangsdaten stehen nicht darin.
+- Die native Referenzszene bleibt als eigener Vergleich erhalten (lokal
+  gezeichnete Bilder, ohne WebView und ohne Replikation).
+
+**Auswertung:**
+
+- Erscheint auch das lokale Video nur in einer Hälfte, liegt das Problem
+  allgemein am Weg, das Video per Replikation zu kopieren, nicht an YouTube.
+- Erscheint es in beiden Hälften, YouTube aber nicht, liegt der Unterschied bei
+  YouTube. Mögliche Gründe sind die Art der Wiedergabe (MSE/Streaming statt
+  Datei), die Seitenstruktur oder ein Schutz. Belegt ist keiner davon.
 
 ### Optionale Playlist-Ansicht
 
@@ -233,10 +322,14 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
   Referenzszene, PKCE und OAuth-Redirect sowie die Begrenzung des
   Spiegel-Modus: echte Ebene und replizierte Kopie bleiben bei allen
   Grenzwerten in ihrer Augenhälfte (`MirrorClippingRegressionTests`).
+  Außerdem Spiegel-Anordnungen (Original links/rechts, ohne Replikat),
+  Zuordnung und Mitlieferung der lokalen Testseite sowie Inhalt des
+  Diagnoseberichts, ohne URLs und Zugangsdaten (`MirrorComparisonTests`).
 - `Demonic VRUITests`: Start mit dem Namen „Demonic VR“, Referenzszene im
   Querformat mit laufendem Framezähler und Rückkehr zum Player, Kalibrierung
   und Zurücksetzen, ungültiger Link mit Rückweg, Live-Test der Referenzszene
   mit erkannter Bewegung, gesperrte YouTube-Freigabe ohne Quelle,
+  lokaler Spiegel-Durchlauf mit beschrifteten Hälften und Bericht,
   Launch-Performance. UI-Tests starten mit `-DemonicUITest`, ohne Netzwerk und
   mit eigener `UserDefaults`-Suite.
 
@@ -266,7 +359,30 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
    Frames, erscheint der Hinweis mit „Diagnose“ und „Zurück zum Player“, und
    beides funktioniert.
 
-### iPhone-Testfolge Spiegel-Modus (neuer Stand, noch offen)
+### iPhone-Schrittfolge: lokaler Videotest, dann YouTube-Vergleich
+
+1. App neu installieren und „Spiegeltest“ öffnen.
+2. „Testseite in der WebView laden“ wählen und warten, bis „Video läuft –
+   Spiegel-Modus möglich“ erscheint. Anordnung „Original links · Replikat
+   rechts“ wählen und „Spiegel starten – lokales Video“ antippen.
+3. In der Brille oder direkt auf dem Display ansehen. Dann „Beobachtung“ öffnen
+   und für **LINKS** und **RECHTS** das Videobild (bewegt / eingefroren /
+   schwarz) und die HTML-Oberfläche (türkiser Rahmen, „HTML-OVERLAY“, roter
+   Balken, „HTML ⏯“) eintragen.
+4. Optional die Kalibrierung prüfen: Abstand −25 %, 0 % und +25 %. Keine
+   Leinwand darf über die Mitte ragen.
+5. „Zurück zum Player“: Die Testseite läuft an derselben Position weiter, die
+   Statuszeile meldet „WebView gleich“.
+6. Den Durchlauf mit „Original rechts · Replikat links“ und mit „Nur Original
+   links“ wiederholen und jedes Mal beide Hälften eintragen.
+7. YouTube-Vergleich: „YouTube-Ansicht öffnen“, ein Video starten, Hinweise
+   bestätigen, „Spiegel starten – YouTube“, beide Hälften eintragen. Mit „Nur
+   Original“ wiederholen.
+8. Zurück zum Player, die YouTube-Position und den Ton prüfen und den Spiegel
+   noch einmal öffnen.
+9. Im Spiegeltest den Diagnosebericht kopieren oder teilen.
+
+### iPhone-Testfolge Spiegel-Modus (Kalibrierung, Rückkehr)
 
 1. **Beide Augen:** YouTube-Video in der YouTube-Ansicht starten → „Cardboard β“
    → Hinweise bestätigen → „Spiegel-Cardboard starten“. In der Brille prüfen:
@@ -303,10 +419,16 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
   Darstellungsweg mit lokal erzeugten Bildern (`StereoCinemaView`), **nicht**
   für den Spiegel-Modus.
 
+**Spiegel-Modus mit YouTube auf dem iPhone (manuell beobachtet):** Videobild
+nur rechts, also im Replikat, links schwarz. Die YouTube-Bedienelemente waren
+auf beiden Seiten zu sehen.
+
 **Noch nicht geprüft:**
 
-- Der Spiegel-Modus auf dem Gerät (Testfolge oben), insbesondere ob iOS die
-  Videoebene repliziert.
+- Der lokale Spiegel-Vergleichstest und die Anordnungen „Original rechts“ und
+  „Nur Original“ auf dem Gerät (Schrittfolge oben).
+- Ob der behobene Fehler beim Umhängen der WebView irgendetwas an der
+  Darstellung ändert.
 - Build, Unit- und UI-Tests in Xcode. Der Code entstand in einer
   Linux-Umgebung ohne macOS, Xcode und Swift-Compiler, deshalb liefen dort
   weder Build noch Tests.
