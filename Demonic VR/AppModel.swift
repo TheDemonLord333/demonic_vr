@@ -35,10 +35,21 @@ nonisolated enum CardboardSource: String, Equatable, Sendable {
 
 nonisolated struct AppEnvironment: Sendable {
     var isUITest: Bool
+    /// UI-Tests der Entwicklerfunktionen: Entwickleroptionen von Anfang an zeigen.
+    var forceDeveloperOptions: Bool = false
 
     static var current: AppEnvironment {
-        AppEnvironment(isUITest: ProcessInfo.processInfo.arguments.contains("-DemonicUITest"))
+        let arguments = ProcessInfo.processInfo.arguments
+        return AppEnvironment(isUITest: arguments.contains("-DemonicUITest"),
+                              forceDeveloperOptions: arguments.contains("-DemonicDevOptions"))
     }
+}
+
+/// Ergebnis von „In VR ansehen“.
+nonisolated enum VRStartResult: Equatable, Sendable {
+    case started
+    case needsAcknowledgement
+    case unavailable(String)
 }
 
 @Observable
@@ -54,9 +65,15 @@ final class AppModel {
         case calibration
         case playlists
         case mirrorTest
+        case settings
 
         var id: String { rawValue }
     }
+
+    static let developerOptionsKey = "demonicvr.showDeveloperOptions"
+    static let youtubeAcknowledgedKey = "demonicvr.youtubeVRAcknowledged"
+    /// Die auf dem iPhone erfolgreich getestete VR-Anordnung: zwei Replikate, Original verborgen.
+    static let vrMirrorMode: MirrorDisplayMode = .twoReplicas
 
     let environment: AppEnvironment
     let player: PlayerController
@@ -68,11 +85,18 @@ final class AppModel {
 
     var screen: Screen = .player
     var sheet: Sheet?
-    /// Bestätigung der YouTube-Hinweise, nur für die laufende Sitzung.
+    /// Bestätigung der YouTube-Hinweise (über „In VR ansehen“ dauerhaft gespeichert).
     var youtubeCardboardAcknowledged = false
     private(set) var continuity: ContinuityReport?
+    /// Entwickler-/Diagnosefunktionen und technische Statusleiste auf der Hauptseite zeigen.
+    private(set) var showDeveloperOptions = false
+    /// Anordnung der laufenden Spiegel-Sitzung (VR: immer `vrMirrorMode`).
+    private(set) var activeMirrorMode: MirrorDisplayMode = AppModel.vrMirrorMode
+    /// Die laufende Spiegel-Sitzung kam aus dem Spiegeltest (zeigt Testhilfen in Cardboard).
+    private(set) var activeMirrorIsTest = false
 
     @ObservationIgnored private var continuityStart: ContinuityMark?
+    @ObservationIgnored private let defaults: UserDefaults
 
     init(environment: AppEnvironment = .current) {
         self.environment = environment
@@ -83,6 +107,9 @@ final class AppModel {
         } else {
             defaults = .standard
         }
+        self.defaults = defaults
+        self.showDeveloperOptions = environment.forceDeveloperOptions || defaults.bool(forKey: Self.developerOptionsKey)
+        self.youtubeCardboardAcknowledged = defaults.bool(forKey: Self.youtubeAcknowledgedKey)
         let player = PlayerController(startURL: environment.isUITest ? nil : PlayerController.homeURL)
         self.player = player
         self.calibration = CalibrationStore(defaults: defaults)
@@ -116,6 +143,54 @@ final class AppModel {
                                        health: youtubeFrameHealth(now: now))
     }
 
+    // MARK: - Einstellungen
+
+    /// Blendet nur Bedienelemente ein/aus – WebView und Wiedergabe bleiben unberührt.
+    func setShowDeveloperOptions(_ value: Bool) {
+        showDeveloperOptions = value
+        defaults.set(value, forKey: Self.developerOptionsKey)
+    }
+
+    func setYouTubeAcknowledged(_ value: Bool) {
+        youtubeCardboardAcknowledged = value
+        defaults.set(value, forKey: Self.youtubeAcknowledgedKey)
+    }
+
+    // MARK: - In VR ansehen
+
+    /// Prüft, ob das aktuelle Video in VR gezeigt werden kann (Pause ist erlaubt).
+    func vrAvailability(now: Date = Date()) -> (ready: Bool, message: String) {
+        switch player.sourceKind {
+        case .youtubeSite, .localVideoTest:
+            break
+        case .youtubeEmbed:
+            return (false, "Der eingebettete IFrame-Player kann nicht in VR gezeigt werden. Öffne das Video in der YouTube-Ansicht (Menü „…“ → IFrame-Player aus).")
+        default:
+            return (false, "Öffne zuerst ein Video in der YouTube-Ansicht.")
+        }
+        let status = player.status
+        guard status.hasVideo, now.timeIntervalSince(status.updatedAt) < 3 else {
+            return (false, "Kein Video erkannt. Öffne ein Video und starte es kurz.")
+        }
+        return (true, "Bereit für VR.")
+    }
+
+    /// „In VR ansehen“: startet direkt die getestete Konfiguration (zwei Replikate,
+    /// Original verborgen) mit derselben WebView – ohne Einstellungen im Spiegeltest.
+    @discardableResult
+    func startVR() -> VRStartResult {
+        let availability = vrAvailability()
+        guard availability.ready else { return .unavailable(availability.message) }
+        let source: CardboardSource = player.sourceKind == .localVideoTest ? .localVideoMirror : .youtubeMirror
+        if source == .youtubeMirror && !youtubeCardboardAcknowledged {
+            return .needsAcknowledgement
+        }
+        snapshot.stop()
+        sheet = nil
+        enterCardboard(source, mirrorMode: Self.vrMirrorMode, fromTest: false)
+        return .started
+    }
+
     // MARK: - Ansichtswechsel
 
     func startReferenceCardboard() {
@@ -133,7 +208,7 @@ final class AppModel {
               player.mirrorReadiness(acknowledged: youtubeCardboardAcknowledged).ready else { return false }
         snapshot.stop()
         sheet = nil
-        enterCardboard(.youtubeMirror)
+        enterCardboard(.youtubeMirror, mirrorMode: mirrorTest.mode, fromTest: true)
         return true
     }
 
@@ -144,7 +219,7 @@ final class AppModel {
               player.mirrorReadiness(acknowledged: false).ready else { return false }
         snapshot.stop()
         sheet = nil
-        enterCardboard(.localVideoMirror)
+        enterCardboard(.localVideoMirror, mirrorMode: mirrorTest.mode, fromTest: true)
         return true
     }
 
@@ -156,13 +231,18 @@ final class AppModel {
         return true
     }
 
-    private func enterCardboard(_ source: CardboardSource) {
+    private func enterCardboard(_ source: CardboardSource,
+                                mirrorMode: MirrorDisplayMode = AppModel.vrMirrorMode,
+                                fromTest: Bool = false) {
         continuityStart = player.continuityMark()
         continuity = nil
         if source.isMirror {
+            activeMirrorMode = mirrorMode
+            activeMirrorIsTest = fromTest
             player.mirrorPageSize = player.webView?.bounds.size
             player.mirrorSessionActive = true
             mirrorTest.begin(source: player.sourceKind,
+                             mode: mirrorMode,
                              calibration: calibration.settings,
                              status: player.status,
                              webViewSize: player.webView?.bounds.size)

@@ -718,3 +718,52 @@ struct HeadsetButtonTests {
         #expect(!seek.contains("currentSrc"))
     }
 }
+
+// MARK: - Oberfläche: In VR ansehen, Einstellungen
+
+@MainActor
+struct VRStartAndSettingsTests {
+    @Test func vrUsesTheTestedTwoReplicaConfiguration() {
+        #expect(AppModel.vrMirrorMode == .twoReplicas)
+        #expect(AppModel.vrMirrorMode.instanceCount == 3)
+    }
+
+    @Test func vrWithoutVideoExplainsInsteadOfStarting() {
+        let model = AppModel(environment: AppEnvironment(isUITest: true))
+        let result = model.startVR()
+        if case .unavailable(let message) = result {
+            #expect(message.contains("Video"))
+        } else {
+            Issue.record("VR darf ohne Video nicht starten: \(result)")
+        }
+        #expect(model.screen == .player)
+        #expect(model.player.webView == nil) // nichts wurde erzeugt oder geladen
+    }
+
+    @Test func developerOptionsDefaultOffAndPersist() {
+        let model = AppModel(environment: AppEnvironment(isUITest: true))
+        #expect(model.showDeveloperOptions == false)
+        model.setShowDeveloperOptions(true)
+        #expect(model.showDeveloperOptions)
+        #expect(UserDefaults(suiteName: "DemonicVR.UITests")?.bool(forKey: AppModel.developerOptionsKey) == true)
+        let forced = AppModel(environment: AppEnvironment(isUITest: true, forceDeveloperOptions: true))
+        #expect(forced.showDeveloperOptions)
+    }
+
+    @Test func togglingSettingsKeepsTheSameWebView() {
+        let model = AppModel(environment: AppEnvironment(isUITest: true))
+        let webView = model.player.hostedWebView()
+        model.sheet = .settings
+        model.setShowDeveloperOptions(true)
+        model.setShowDeveloperOptions(false)
+        model.sheet = nil
+        #expect(model.player.hostedWebView() === webView)
+    }
+
+    @Test func stopCommandPausesAndRewinds() {
+        let script = PlayerController.playbackScript(.stop)
+        #expect(script.contains("('stop')"))
+        #expect(script.contains("best.pause(); best.currentTime = 0"))
+        #expect(script.contains("p.pauseVideo(); p.seekTo(0, true)"))
+    }
+}

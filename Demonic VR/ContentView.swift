@@ -2,8 +2,8 @@
 //  ContentView.swift
 //  Demonic VR
 //
-//  Startansicht: YouTube in der einzigen WebView, Link-Eingabe und Zugang
-//  zu Cardboard, Referenzszene, Diagnose, Kalibrierung und Playlists.
+//  Startansicht: „In VR ansehen“, YouTube in der einzigen WebView, Link-Eingabe,
+//  YouTube/Zurück/Playlists. Einstellungen und Entwicklerfunktionen über „…“.
 //  Die Cardboard-Ansicht liegt als Ebene darüber – die WebView bleibt immer
 //  an derselben Stelle in der Hierarchie und wird nie neu erzeugt.
 //
@@ -49,6 +49,8 @@ struct ContentView: View {
             PlaylistsView()
         case .mirrorTest:
             MirrorTestView()
+        case .settings:
+            SettingsView()
         }
     }
 }
@@ -58,15 +60,22 @@ struct ContentView: View {
 struct PlayerScreen: View {
     @Environment(AppModel.self) private var model
     @State private var linkText = ""
+    @State private var vrConfirmationShown = false
     @FocusState private var linkFocused: Bool
 
-    private let columns = [GridItem(.adaptive(minimum: 84), spacing: 8)]
+    private let developerColumns = [GridItem(.adaptive(minimum: 100), spacing: 6)]
 
     var body: some View {
+        // Die WebView steht an fester Position in diesem VStack. Ein-/Ausblenden der
+        // Entwicklerzeilen ändert nur ihre Größe – sie wird weder neu erzeugt noch neu geladen.
         VStack(spacing: 0) {
             header
+            vrButton
             linkBar
-            actionGrid
+            navigationRow
+            if model.showDeveloperOptions {
+                developerGrid
+            }
             if let issue = model.player.issue {
                 IssueBanner(issue: issue) { action in
                     model.player.perform(action)
@@ -74,19 +83,33 @@ struct PlayerScreen: View {
             }
             WebViewHost(player: model.player)
                 .background(Color.black)
-            statusBar
+            if model.showDeveloperOptions {
+                statusBar
+            }
         }
         .background(DemonicTheme.background.ignoresSafeArea())
+        .alert("YouTube in VR (experimentell)", isPresented: $vrConfirmationShown) {
+            Button("Bestätigen und in VR ansehen") {
+                model.setYouTubeAcknowledged(true)
+                startVR()
+            }
+            .accessibilityIdentifier("vr.confirm")
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(SourcePolicy.youtubeAcknowledgement)
+        }
     }
 
+    // MARK: Kopfzeile
+
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: "eyeglasses")
-                .font(.title2)
+                .font(.headline)
                 .foregroundStyle(DemonicTheme.accent)
                 .accessibilityHidden(true)
             Text("Demonic VR")
-                .font(.title2.weight(.heavy))
+                .font(.headline.weight(.heavy))
                 .foregroundStyle(.white)
                 .accessibilityIdentifier("app.title")
             Spacer()
@@ -94,6 +117,11 @@ struct PlayerScreen: View {
                 ProgressView().controlSize(.small)
             }
             Menu {
+                Button("Einstellungen", systemImage: "gearshape") {
+                    linkFocused = false
+                    model.sheet = .settings
+                }
+                .accessibilityIdentifier("menu.settings")
                 Toggle("Links im IFrame-Player öffnen", isOn: Binding(
                     get: { model.player.preferEmbedPlayer },
                     set: { model.player.setPreferEmbedPlayer($0) }
@@ -103,14 +131,46 @@ struct PlayerScreen: View {
                 Image(systemName: "ellipsis.circle").font(.title3)
             }
             .accessibilityLabel("Weitere Optionen")
+            .accessibilityIdentifier("menu.more")
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 6)
-        .padding(.bottom, 4)
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
     }
 
+    // MARK: In VR ansehen
+
+    private var vrButton: some View {
+        Button(action: startVR) {
+            Label("In VR ansehen", systemImage: "eyeglasses")
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(DemonicTheme.accent)
+        .foregroundStyle(.black)
+        .controlSize(.large)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("vr.start")
+    }
+
+    private func startVR() {
+        linkFocused = false
+        switch model.startVR() {
+        case .started:
+            break
+        case .needsAcknowledgement:
+            vrConfirmationShown = true
+        case .unavailable(let message):
+            model.player.issue = PlayerIssue(title: "VR gerade nicht möglich", message: message, actions: [.dismiss])
+        }
+    }
+
+    // MARK: Link und Navigation
+
     private var linkBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             TextField("YouTube-Link einfügen", text: $linkText)
                 .textFieldStyle(.roundedBorder)
                 .keyboardType(.URL)
@@ -129,48 +189,60 @@ struct PlayerScreen: View {
             }
             .labelStyle(.iconOnly)
             .buttonBorderShape(.roundedRectangle)
+            .controlSize(.small)
             Button("Öffnen", action: openLink)
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
                 .disabled(linkText.trimmingCharacters(in: .whitespaces).isEmpty)
                 .accessibilityIdentifier("link.open")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 2)
     }
 
-    private var actionGrid: some View {
-        LazyVGrid(columns: columns, spacing: 8) {
-            ActionTile(title: "YouTube", systemImage: "house.fill", identifier: "nav.home") {
+    private var navigationRow: some View {
+        HStack(spacing: 6) {
+            CompactChip(title: "YouTube", systemImage: "house.fill", identifier: "nav.home") {
                 model.player.goHome()
             }
-            ActionTile(title: "Zurück", systemImage: "chevron.backward", identifier: "nav.back") {
+            CompactChip(title: "Zurück", systemImage: "chevron.backward", identifier: "nav.back") {
                 model.player.goBack()
             }
             .disabled(!model.player.canGoBack)
-            ActionTile(title: "Cardboard", systemImage: "eyeglasses", identifier: "nav.cardboard", badge: "β") {
-                linkFocused = false
-                model.requestYouTubeCardboard()
-            }
-            ActionTile(title: "Referenz", systemImage: "square.grid.3x3.fill", identifier: "nav.reference") {
-                linkFocused = false
-                model.startReferenceCardboard()
-            }
-            ActionTile(title: "Diagnose", systemImage: "waveform.path.ecg", identifier: "nav.diagnostics") {
-                model.sheet = .diagnostics
-            }
-            ActionTile(title: "Kalibrierung", systemImage: "slider.horizontal.3", identifier: "nav.calibration") {
-                model.sheet = .calibration
-            }
-            ActionTile(title: "Playlists", systemImage: "music.note.list", identifier: "nav.playlists") {
+            CompactChip(title: "Playlists", systemImage: "music.note.list", identifier: "nav.playlists") {
                 model.sheet = .playlists
             }
-            ActionTile(title: "Spiegeltest", systemImage: "rectangle.split.2x1", identifier: "nav.mirrorTest") {
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
+
+    /// Entwickler-/Diagnosefunktionen – nur mit „Entwickleroptionen auf Hauptseite anzeigen“.
+    private var developerGrid: some View {
+        LazyVGrid(columns: developerColumns, spacing: 6) {
+            CompactChip(title: "Spiegeltest", systemImage: "rectangle.split.2x1", identifier: "nav.mirrorTest") {
                 linkFocused = false
                 model.sheet = .mirrorTest
             }
+            CompactChip(title: "Diagnose", systemImage: "waveform.path.ecg", identifier: "nav.diagnostics") {
+                model.sheet = .diagnostics
+            }
+            CompactChip(title: "Referenz", systemImage: "square.grid.3x3.fill", identifier: "nav.reference") {
+                linkFocused = false
+                model.startReferenceCardboard()
+            }
+            CompactChip(title: "Snapshot β", systemImage: "camera.viewfinder", identifier: "nav.cardboard") {
+                linkFocused = false
+                model.requestYouTubeCardboard()
+            }
+            CompactChip(title: "Kalibrierung", systemImage: "slider.horizontal.3", identifier: "nav.calibration") {
+                model.sheet = .calibration
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("developer.grid")
     }
 
     private var statusBar: some View {
@@ -194,11 +266,13 @@ struct PlayerScreen: View {
                     .accessibilityIdentifier("player.continuity")
             }
         }
-        .font(.caption)
+        .font(.caption2)
         .lineLimit(1)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
         .background(DemonicTheme.panel)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("developer.statusBar")
     }
 
     private func openLink() {
@@ -209,36 +283,23 @@ struct PlayerScreen: View {
     }
 }
 
-private struct ActionTile: View {
+/// Kompakter Knopf mit Symbol und kurzem Text im violetten Stil.
+private struct CompactChip: View {
     let title: String
     let systemImage: String
     let identifier: String
-    var badge: String? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .overlay(alignment: .topTrailing) {
-                        if let badge {
-                            Text(badge)
-                                .font(.caption2.bold())
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 3)
-                                .background(DemonicTheme.accent, in: Capsule())
-                                .offset(x: 10, y: -6)
-                        }
-                    }
-                Text(title)
-                    .font(.caption2)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity, minHeight: 44)
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
+        .controlSize(.small)
         .tint(DemonicTheme.violet)
         .accessibilityLabel(title)
         .accessibilityIdentifier(identifier)

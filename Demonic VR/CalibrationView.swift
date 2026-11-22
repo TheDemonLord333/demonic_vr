@@ -104,38 +104,46 @@ private struct SliderRow: View {
     }
 }
 
-/// Eigenständige Kalibrierung mit Vorschau der Referenzszene.
-struct CalibrationSheet: View {
+/// Kalibrierung mit Vorschau der Referenzszene – als Seite in den Einstellungen nutzbar.
+struct CalibrationPage: View {
     @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                StereoCinemaView(frame: model.reference.frame, settings: model.calibration.settings)
+                    .aspectRatio(2.17, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .accessibilityIdentifier("calibration.preview")
+                Text("Vorschau mit einer lokalen Testszene. Die Werte gelten für „In VR ansehen“. Die endgültige Prüfung erfolgt in der Brille.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                CalibrationControls()
+            }
+            .padding()
+        }
+        .navigationTitle("Kalibrierung")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { model.reference.start() }
+        .onDisappear {
+            if !model.isInCardboard { model.reference.stop() }
+        }
+    }
+}
+
+/// Eigenständige Kalibrierung als Sheet.
+struct CalibrationSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    StereoCinemaView(frame: model.reference.frame, settings: model.calibration.settings)
-                        .aspectRatio(2.17, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .accessibilityIdentifier("calibration.preview")
-                    Text("Vorschau mit der Referenzszene. Die endgültige Prüfung erfolgt in der Brille über „Referenz“.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    CalibrationControls()
+            CalibrationPage()
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Fertig") { dismiss() }
+                            .accessibilityIdentifier("sheet.done")
+                    }
                 }
-                .padding()
-            }
-            .navigationTitle("Kalibrierung")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Fertig") { dismiss() }
-                        .accessibilityIdentifier("sheet.done")
-                }
-            }
-        }
-        .onAppear { model.reference.start() }
-        .onDisappear {
-            if !model.isInCardboard { model.reference.stop() }
         }
     }
 }

@@ -26,6 +26,17 @@ struct CardboardView: View {
     /// Quellen mit echter Videowiedergabe in der WebView (Brillentaste = Play/Pause).
     private var controlsWebVideo: Bool { source != .reference }
 
+    /// Testhilfen (Hälften-Beschriftung, Beobachtung, Diagnose) nur im Spiegeltest,
+    /// bei Entwickleroptionen oder in den reinen Entwickler-Ansichten.
+    private var showsTestAids: Bool {
+        !source.isMirror || model.activeMirrorIsTest || model.showDeveloperOptions
+    }
+
+    private var titleText: String {
+        guard source.isMirror, !model.activeMirrorIsTest else { return source.title }
+        return source == .localVideoMirror ? "VR · Testvideo" : "VR · YouTube"
+    }
+
     private var frame: VideoFrame? {
         switch source {
         case .reference: return model.reference.frame
@@ -38,7 +49,7 @@ struct CardboardView: View {
         if source.isMirror {
             // Nur Information: Die Player-Zeit belegt keine sichtbare Wiedergabe.
             let status = model.player.status
-            return "Player-Zeit \(TimeFormatter.clock(status.currentTime)) (\(status.isPaused ? "pausiert" : "läuft")) · \(model.mirrorTest.mode.title)"
+            return "Player-Zeit \(TimeFormatter.clock(status.currentTime)) (\(status.isPaused ? "pausiert" : "läuft")) · \(model.activeMirrorMode.title)"
         }
         return "Frame \(frame?.sequence ?? 0)"
     }
@@ -51,14 +62,16 @@ struct CardboardView: View {
                 // Keine SwiftUI-Geste über der WebView: Die Leiste wird über die Eck-Taste gesteuert.
                 MirrorCinemaView(player: model.player,
                                  settings: model.calibration.settings,
-                                 mode: model.mirrorTest.mode,
+                                 mode: model.activeMirrorMode,
                                  status: model.player.status,
                                  onGeometry: { geometry in
                                      model.mirrorTest.updateGeometry(geometry)
                                      model.mirrorTest.updateCalibration(model.calibration.settings)
                                  })
                     .accessibilityIdentifier("cardboard.mirror")
-                HalfLabels(mode: model.mirrorTest.mode)
+                if showsTestAids {
+                    HalfLabels(mode: model.activeMirrorMode)
+                }
             } else {
                 StereoCinemaView(frame: frame, settings: model.calibration.settings)
                     .contentShape(Rectangle())
@@ -83,7 +96,7 @@ struct CardboardView: View {
                 }
             }
 
-            if source.isMirror && observationVisible {
+            if source.isMirror && showsTestAids && observationVisible {
                 MirrorObservationPanel(
                     onClose: { observationVisible = false },
                     onReport: { model.exitCardboard(then: .mirrorTest) },
@@ -157,17 +170,18 @@ struct CardboardView: View {
     // MARK: - Bedienleiste
 
     private var controlBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button {
                 model.exitCardboard()
             } label: {
                 Label("Zurück zum Player", systemImage: "chevron.backward")
             }
             .buttonStyle(.borderedProminent)
+            .labelStyle(.titleAndIcon)
             .accessibilityIdentifier("cardboard.exit")
 
             VStack(alignment: .leading, spacing: 0) {
-                Text(source.title).font(.subheadline.bold())
+                Text(titleText).font(.subheadline.bold())
                 Text(counterText)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -184,6 +198,9 @@ struct CardboardView: View {
                     Button { sendPlayback(.toggle) } label: { Image(systemName: "playpause.fill") }
                         .accessibilityLabel("Wiedergabe/Pause")
                         .accessibilityIdentifier("cardboard.playPause")
+                    Button { sendPlayback(.stop) } label: { Image(systemName: "stop.fill") }
+                        .accessibilityLabel("Stopp")
+                        .accessibilityIdentifier("cardboard.stop")
                     Button { sendPlayback(.seek(seconds: 10)) } label: { Image(systemName: "goforward.10") }
                         .accessibilityLabel("10 Sekunden vor")
                         .accessibilityIdentifier("cardboard.seekForward")
@@ -191,7 +208,7 @@ struct CardboardView: View {
                 .buttonStyle(.bordered)
             }
 
-            if source.isMirror {
+            if source.isMirror && showsTestAids {
                 Button {
                     observationVisible.toggle()
                 } label: {
@@ -219,13 +236,15 @@ struct CardboardView: View {
             .buttonStyle(.bordered)
             .accessibilityIdentifier("cardboard.calibration")
 
-            Button {
-                model.exitCardboard(then: .diagnostics)
-            } label: {
-                Label("Diagnose", systemImage: "waveform.path.ecg")
+            if showsTestAids {
+                Button {
+                    model.exitCardboard(then: .diagnostics)
+                } label: {
+                    Label("Diagnose", systemImage: "waveform.path.ecg")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("cardboard.diagnostics")
             }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("cardboard.diagnostics")
 
             Button {
                 hideTask?.cancel()
@@ -237,9 +256,11 @@ struct CardboardView: View {
             .labelStyle(.iconOnly)
             .accessibilityIdentifier("cardboard.hideControls")
         }
-        .labelStyle(.titleAndIcon)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        // Kompakt: Symbole statt Text, damit die Leinwände frei bleiben.
+        .labelStyle(.iconOnly)
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(.ultraThinMaterial, in: Capsule())
         .padding(.top, 12)
         .padding(.horizontal, 24)
@@ -270,6 +291,7 @@ struct CardboardView: View {
         feedbackTask?.cancel()
         switch command {
         case .toggle: playbackFeedback = "⏯"
+        case .stop: playbackFeedback = "Stopp"
         case .seek(let seconds): playbackFeedback = seconds < 0 ? "−10 s" : "+10 s"
         }
         feedbackTask = Task { @MainActor in
@@ -294,7 +316,7 @@ struct CardboardView: View {
         hideTask?.cancel()
         guard !model.environment.isUITest else { return }
         // Im Spiegeltest bleibt die Leiste, bis sie bewusst ausgeblendet wird.
-        if source.isMirror { return }
+        if source.isMirror && model.activeMirrorIsTest { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled, !calibrationVisible else { return }

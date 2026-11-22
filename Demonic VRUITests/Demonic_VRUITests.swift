@@ -16,23 +16,100 @@ final class Demonic_VRUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// - Parameter devOptions: Entwickleroptionen auf der Hauptseite zeigen (für Tests der Entwicklerfunktionen).
     @MainActor
-    private func launchApp() -> XCUIApplication {
+    private func launchApp(devOptions: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-DemonicUITest"]
+        if devOptions { app.launchArguments += ["-DemonicDevOptions"] }
         app.launch()
         return app
     }
 
     @MainActor
+    private func openSettings(_ app: XCUIApplication) {
+        app.buttons["menu.more"].tap()
+        let item = app.buttons["Einstellungen"]
+        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        item.tap()
+        XCTAssertTrue(app.switches["settings.devOptions"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testStartScreenShowsAppName() throws {
-        let app = launchApp()
+        let app = launchApp(devOptions: false)
         let title = app.staticTexts["app.title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10))
         XCTAssertEqual(title.label, "Demonic VR")
+        // Normale Bedienung direkt erreichbar.
+        XCTAssertTrue(app.buttons["vr.start"].exists)
         XCTAssertTrue(app.textFields["link.field"].exists)
-        XCTAssertTrue(app.buttons["nav.reference"].exists)
-        XCTAssertTrue(app.buttons["nav.cardboard"].exists)
+        XCTAssertTrue(app.buttons["link.open"].exists)
+        XCTAssertTrue(app.buttons["nav.home"].exists)
+        XCTAssertTrue(app.buttons["nav.back"].exists)
+        XCTAssertTrue(app.buttons["nav.playlists"].exists)
+        // Entwicklerfunktionen standardmäßig ausgeblendet.
+        XCTAssertFalse(app.buttons["nav.reference"].exists)
+        XCTAssertFalse(app.buttons["nav.mirrorTest"].exists)
+        XCTAssertFalse(app.buttons["nav.diagnostics"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["developer.statusBar"].exists)
+    }
+
+    @MainActor
+    func testSettingsToggleDeveloperOptionsRepeatedly() throws {
+        let app = launchApp(devOptions: false)
+        XCTAssertTrue(app.buttons["menu.more"].waitForExistence(timeout: 10))
+        for expectVisible in [true, false, true] {
+            openSettings(app)
+            app.switches["settings.devOptions"].tap()
+            app.buttons["sheet.done"].tap()
+            XCTAssertTrue(app.staticTexts["app.title"].waitForExistence(timeout: 5))
+            XCTAssertEqual(app.buttons["nav.reference"].waitForExistence(timeout: 2), expectVisible)
+            XCTAssertEqual(app.descendants(matching: .any)["developer.statusBar"].exists, expectVisible)
+        }
+        // Kalibrierung ist als normale Einstellung erreichbar.
+        openSettings(app)
+        app.buttons["settings.calibration"].tap()
+        XCTAssertTrue(app.sliders["calibration.screenScale"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testVRButtonWithoutVideoExplainsWhy() throws {
+        let app = launchApp(devOptions: false)
+        XCTAssertTrue(app.buttons["vr.start"].waitForExistence(timeout: 10))
+        app.buttons["vr.start"].tap()
+        XCTAssertTrue(app.buttons["issue.dismiss"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["cardboard.exit"].exists)
+        app.buttons["issue.dismiss"].tap()
+    }
+
+    @MainActor
+    func testVRStartsTwoReplicasAndSwitchesBackRepeatedly() throws {
+        let app = launchApp(devOptions: false)
+        XCTAssertTrue(app.buttons["menu.more"].waitForExistence(timeout: 10))
+        openSettings(app)
+        app.buttons["Lokales Testvideo laden"].tap()
+
+        for round in 1...3 {
+            // Warten, bis das Testvideo erkannt ist; vorher erklärt ein Hinweis den Grund.
+            var started = false
+            for _ in 0..<15 where !started {
+                app.buttons["vr.start"].tap()
+                started = app.buttons["cardboard.exit"].waitForExistence(timeout: 2)
+                if !started, app.buttons["issue.dismiss"].exists { app.buttons["issue.dismiss"].tap() }
+            }
+            XCTAssertTrue(started, "VR startet nicht (Runde \(round))")
+            XCTAssertTrue(app.staticTexts["VR · Testvideo"].exists)
+            // Testhilfen sind im normalen VR-Modus ausgeblendet.
+            XCTAssertFalse(app.staticTexts["cardboard.half.left"].exists)
+            XCTAssertTrue(app.buttons["cardboard.stop"].exists)
+            app.buttons["cardboard.exit"].tap()
+            XCTAssertTrue(app.buttons["vr.start"].waitForExistence(timeout: 5))
+
+            // Einstellungen während der Wiedergabe öffnen und schließen.
+            openSettings(app)
+            app.buttons["sheet.done"].tap()
+        }
     }
 
     @MainActor
