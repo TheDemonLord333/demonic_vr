@@ -34,6 +34,10 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             model.handleScenePhase(phase)
         }
+        .task {
+            // Gespeicherte Google-Anmeldung prüfen und bei Bedarf erneuern (unabhängig von der WebView).
+            await model.google.restoreSession()
+        }
     }
 
     @ViewBuilder

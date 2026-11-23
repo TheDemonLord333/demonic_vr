@@ -59,6 +59,9 @@ struct PlaylistsView: View {
                 Text("Für die Playlist-Ansicht mit Google anmelden. Diese Anmeldung ist getrennt von der YouTube-Sitzung im Player.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
+                if let notice = model.google.noticeMessage {
+                    Text(notice).font(.caption).foregroundStyle(.orange)
+                }
                 Button {
                     Task {
                         await model.google.signIn(using: webAuthenticationSession)
@@ -76,6 +79,9 @@ struct PlaylistsView: View {
             .padding()
         } else {
             List {
+                if let notice = model.google.noticeMessage {
+                    Text(notice).font(.caption).foregroundStyle(.orange)
+                }
                 if let errorText {
                     Text(errorText).foregroundStyle(.red)
                 }
@@ -120,8 +126,8 @@ struct PlaylistsView: View {
         errorText = nil
         defer { isLoading = false }
         do {
-            let token = try model.google.validAccessToken()
-            playlists = try await YouTubeDataClient(accessToken: token).myPlaylists()
+            // Token wird bei Bedarf automatisch erneuert; bei 401 einmalige Wiederholung.
+            playlists = try await YouTubeDataClient(session: model.google).myPlaylists()
         } catch {
             errorText = error.localizedDescription
         }
@@ -158,8 +164,7 @@ private struct PlaylistEntriesView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let token = try model.google.validAccessToken()
-            entries = try await YouTubeDataClient(accessToken: token).entries(in: playlist.id)
+            entries = try await YouTubeDataClient(session: model.google).entries(in: playlist.id)
         } catch {
             errorText = error.localizedDescription
         }

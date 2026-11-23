@@ -767,3 +767,285 @@ struct VRStartAndSettingsTests {
         #expect(script.contains("p.pauseVideo(); p.seekTo(0, true)"))
     }
 }
+
+// MARK: - Google-Anmeldung: Speichern, Erneuern, Abmelden (ohne Netzwerk)
+
+@MainActor
+final class MockGoogleTransport: GoogleHTTPTransport {
+    var handler: (URLRequest) async throws -> (Data, HTTPURLResponse)
+    private(set) var requests: [URLRequest] = []
+
+    init(handler: @escaping (URLRequest) async throws -> (Data, HTTPURLResponse)) {
+        self.handler = handler
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        requests.append(request)
+        return try await handler(request)
+    }
+
+    var tokenRequests: [URLRequest] { requests.filter { $0.url == GoogleAccountSession.tokenEndpoint } }
+    var revokeRequests: [URLRequest] { requests.filter { $0.url == GoogleAccountSession.revokeEndpoint } }
+    var apiRequests: [URLRequest] { requests.filter { $0.url?.host == "www.googleapis.com" } }
+
+    static func reply(_ request: URLRequest, status: Int, json: String) -> (Data, HTTPURLResponse) {
+        (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+
+    static func form(_ request: URLRequest) -> [String: String] {
+        let body = String(data: request.httpBody ?? Data(), encoding: .utf8) ?? ""
+        var result: [String: String] = [:]
+        for pair in body.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1).map { String($0).removingPercentEncoding ?? String($0) }
+            if parts.count == 2 { result[parts[0]] = parts[1] }
+        }
+        return result
+    }
+}
+
+@MainActor
+struct GoogleSessionTests {
+    static let clientID = "1234567890-testclient.apps.googleusercontent.com"
+    let config = GoogleOAuthConfig(clientID: GoogleSessionTests.clientID)!
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func makeDefaults() -> UserDefaults {
+        let name = "GoogleSessionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    private func credentials(refresh: String? = "refresh-1", access: String? = "access-old",
+                             expiresIn: TimeInterval) -> GoogleStoredCredentials {
+        GoogleStoredCredentials(clientID: Self.clientID, refreshToken: refresh, accessToken: access,
+                                expiresAt: start.addingTimeInterval(expiresIn), scope: GoogleOAuthConfig.scope)
+    }
+
+    private func makeSession(store: InMemoryCredentialStore, transport: MockGoogleTransport,
+                             defaults: UserDefaults? = nil) -> GoogleAccountSession {
+        let session = GoogleAccountSession(config: config, store: store, transport: transport,
+                                           defaults: defaults ?? makeDefaults())
+        session.now = { [start] in start }
+        return session
+    }
+
+    private static func tokenJSON(access: String, refresh: String? = nil) -> String {
+        if let refresh {
+            return #"{"access_token":"\#(access)","expires_in":3599,"refresh_token":"\#(refresh)","scope":"https://www.googleapis.com/auth/youtube.readonly","token_type":"Bearer"}"#
+        }
+        return #"{"access_token":"\#(access)","expires_in":3599,"scope":"https://www.googleapis.com/auth/youtube.readonly","token_type":"Bearer"}"#
+    }
+
+    @Test func restoresSessionWithoutNetworkWhenAccessTokenIsValid() async throws {
+        let store = InMemoryCredentialStore(credentials(expiresIn: 1800))
+        let transport = MockGoogleTransport { request in Issue.record("Unerwartete Anfrage"); throw URLError(.badURL) }
+        let session = makeSession(store: store, transport: transport)
+        #expect(session.isSignedIn)
+        await session.restoreSession()
+        #expect(try await session.validAccessToken() == "access-old")
+        #expect(transport.requests.isEmpty)
+    }
+
+    @Test func restoreRefreshesExpiredTokenAndKeepsRefreshToken() async throws {
+        let store = InMemoryCredentialStore(credentials(expiresIn: -10))
+        let transport = MockGoogleTransport { request in
+            MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "access-new"))
+        }
+        let session = makeSession(store: store, transport: transport)
+        await session.restoreSession()
+        #expect(transport.tokenRequests.count == 1)
+        let form = MockGoogleTransport.form(transport.tokenRequests[0])
+        #expect(form["grant_type"] == "refresh_token")
+        #expect(form["refresh_token"] == "refresh-1")
+        #expect(form["client_id"] == Self.clientID)
+        #expect(form["client_secret"] == nil)               // kein Client-Secret in der iOS-App
+        #expect(store.stored?.accessToken == "access-new")
+        #expect(store.stored?.refreshToken == "refresh-1")  // keine neue → vorhandene behalten
+        #expect(try await session.validAccessToken() == "access-new")
+    }
+
+    @Test func tokenCloseToExpiryIsRefreshedAndNewRefreshTokenStored() async throws {
+        let store = InMemoryCredentialStore(credentials(expiresIn: 30)) // < 60 s Puffer
+        let transport = MockGoogleTransport { request in
+            MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "a2", refresh: "refresh-2"))
+        }
+        let session = makeSession(store: store, transport: transport)
+        #expect(try await session.validAccessToken() == "a2")
+        #expect(store.stored?.refreshToken == "refresh-2")
+    }
+
+    @Test func parallelRequestsShareOneRefresh() async throws {
+        let store = InMemoryCredentialStore(credentials(expiresIn: -10))
+        let transport = MockGoogleTransport { request in
+            try await Task.sleep(for: .milliseconds(80))
+            return MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "shared"))
+        }
+        let session = makeSession(store: store, transport: transport)
+        async let a = session.validAccessToken()
+        async let b = session.validAccessToken()
+        async let c = session.validAccessToken()
+        let tokens = try await [a, b, c]
+        #expect(tokens == ["shared", "shared", "shared"])
+        #expect(transport.tokenRequests.count == 1)
+    }
+
+    @Test func networkErrorKeepsStoredCredentials() async {
+        let stored = credentials(expiresIn: -10)
+        let store = InMemoryCredentialStore(stored)
+        let transport = MockGoogleTransport { _ in throw URLError(.notConnectedToInternet) }
+        let session = makeSession(store: store, transport: transport)
+        do {
+            _ = try await session.validAccessToken()
+            Issue.record("Fehler erwartet")
+        } catch {
+            if case .network = error as? GoogleAuthError {} else { Issue.record("Netzwerkfehler erwartet: \(error)") }
+        }
+        #expect(store.stored == stored)
+        #expect(session.isSignedIn)
+        #expect(session.noticeMessage != nil)
+    }
+
+    @Test func revokedRefreshTokenClearsSession() async {
+        let store = InMemoryCredentialStore(credentials(expiresIn: -10))
+        let transport = MockGoogleTransport { request in
+            MockGoogleTransport.reply(request, status: 400, json: #"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#)
+        }
+        let session = makeSession(store: store, transport: transport)
+        do {
+            _ = try await session.validAccessToken()
+            Issue.record("Fehler erwartet")
+        } catch {
+            #expect(error as? GoogleAuthError == .sessionExpired)
+        }
+        #expect(store.stored == nil)
+        #expect(!session.isSignedIn)
+        #expect(session.errorMessage != nil)
+    }
+
+    @Test func signOutDuringRefreshDoesNotRestoreSession() async {
+        let store = InMemoryCredentialStore(credentials(expiresIn: -10))
+        let transport = MockGoogleTransport { request in
+            try? await Task.sleep(for: .milliseconds(150))
+            return MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "late", refresh: "late-refresh"))
+        }
+        let session = makeSession(store: store, transport: transport)
+        let pending = Task { try await session.validAccessToken() }
+        try? await Task.sleep(for: .milliseconds(30))
+        let revoked = session.signOutLocally()
+        #expect(revoked == "refresh-1")
+        let result = await pending.result
+        if case .success = result { Issue.record("Erneuerung nach Abmeldung darf nicht gelingen") }
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(!session.isSignedIn)
+        #expect(store.stored == nil)
+        await #expect(throws: GoogleAuthError.notSignedIn) { try await session.validAccessToken() }
+    }
+
+    @Test func unauthorizedResponseIsRetriedExactlyOnce() async throws {
+        let store = InMemoryCredentialStore(credentials(expiresIn: 1800))
+        var apiCalls = 0
+        let transport = MockGoogleTransport { request in
+            if request.url == GoogleAccountSession.tokenEndpoint {
+                return MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "fresh"))
+            }
+            apiCalls += 1
+            let auth = request.value(forHTTPHeaderField: "Authorization")
+            return MockGoogleTransport.reply(request, status: auth == "Bearer fresh" ? 200 : 401, json: #"{"items":[]}"#)
+        }
+        let session = makeSession(store: store, transport: transport)
+        let url = URL(string: "https://www.googleapis.com/youtube/v3/playlists")!
+        let data = try await session.authorizedData { token in
+            var r = URLRequest(url: url); r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization"); return r
+        }
+        #expect(String(data: data, encoding: .utf8) == #"{"items":[]}"#)
+        #expect(apiCalls == 2)
+        #expect(transport.tokenRequests.count == 1)
+    }
+
+    @Test func persistentUnauthorizedStopsAfterOneRetry() async {
+        let store = InMemoryCredentialStore(credentials(expiresIn: 1800))
+        let transport = MockGoogleTransport { request in
+            if request.url == GoogleAccountSession.tokenEndpoint {
+                return MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "fresh"))
+            }
+            return MockGoogleTransport.reply(request, status: 401, json: "{}")
+        }
+        let session = makeSession(store: store, transport: transport)
+        let url = URL(string: "https://www.googleapis.com/youtube/v3/playlists")!
+        await #expect(throws: GoogleAuthError.unauthorized) {
+            _ = try await session.authorizedData { _ in URLRequest(url: url) }
+        }
+        #expect(transport.apiRequests.count == 2)
+        #expect(transport.tokenRequests.count == 1)
+    }
+
+    @Test func signOutWorksOfflineAndStillTriesToRevoke() async {
+        let store = InMemoryCredentialStore(credentials(expiresIn: 1800))
+        let transport = MockGoogleTransport { _ in throw URLError(.notConnectedToInternet) }
+        let session = makeSession(store: store, transport: transport)
+        await session.signOut()
+        #expect(!session.isSignedIn)
+        #expect(store.stored == nil)
+        #expect(transport.revokeRequests.count == 1)
+        #expect(MockGoogleTransport.form(transport.revokeRequests[0])["token"] == "refresh-1")
+    }
+
+    @Test func legacySessionWithoutRefreshTokenAsksForConsentOnce() async {
+        let defaults = makeDefaults()
+        let store = InMemoryCredentialStore(credentials(refresh: nil, expiresIn: -10))
+        let transport = MockGoogleTransport { _ in Issue.record("Kein Netzwerk erwartet"); throw URLError(.badURL) }
+        let session = makeSession(store: store, transport: transport, defaults: defaults)
+        await #expect(throws: GoogleAuthError.sessionExpired) { try await session.validAccessToken() }
+        #expect(session.needsOfflineConsent)
+        #expect(store.stored == nil)
+
+        let withConsent = GoogleAccountSession.authorizationURL(config: config, challenge: "c", state: "s", requestConsent: true)!
+        let normal = GoogleAccountSession.authorizationURL(config: config, challenge: "c", state: "s", requestConsent: false)!
+        #expect(withConsent.absoluteString.contains("prompt=consent"))
+        #expect(!normal.absoluteString.contains("prompt="))
+        #expect(normal.absoluteString.contains("code_challenge_method=S256"))
+        #expect(normal.absoluteString.contains("youtube.readonly"))
+        #expect(!normal.absoluteString.contains("client_secret"))
+    }
+
+    @Test func signInWithoutNewRefreshTokenKeepsExistingAndClearsConsentFlag() async throws {
+        let defaults = makeDefaults()
+        let store = InMemoryCredentialStore(credentials(expiresIn: -10))
+        let transport = MockGoogleTransport { request in
+            MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "signed-in"))
+        }
+        let session = makeSession(store: store, transport: transport, defaults: defaults)
+        try await session.completeSignIn(code: "code-1", verifier: "verifier-1")
+        let form = MockGoogleTransport.form(transport.tokenRequests[0])
+        #expect(form["grant_type"] == "authorization_code")
+        #expect(form["code_verifier"] == "verifier-1")
+        #expect(form["client_secret"] == nil)
+        #expect(store.stored?.refreshToken == "refresh-1")
+        #expect(!session.needsOfflineConsent)
+    }
+
+    @Test func storedCredentialsForOtherClientAreDiscarded() {
+        var other = credentials(expiresIn: 1800)
+        other.clientID = "999-other.apps.googleusercontent.com"
+        let store = InMemoryCredentialStore(other)
+        let transport = MockGoogleTransport { _ in throw URLError(.badURL) }
+        let session = makeSession(store: store, transport: transport)
+        #expect(!session.isSignedIn)
+        #expect(store.stored == nil)
+    }
+
+    @Test func tokensNeverLandInUserDefaults() async throws {
+        let defaults = makeDefaults()
+        let store = InMemoryCredentialStore(credentials(expiresIn: -10))
+        let transport = MockGoogleTransport { request in
+            MockGoogleTransport.reply(request, status: 200, json: GoogleSessionTests.tokenJSON(access: "secret-access", refresh: "secret-refresh"))
+        }
+        let session = makeSession(store: store, transport: transport, defaults: defaults)
+        _ = try await session.validAccessToken()
+        let dump = defaults.dictionaryRepresentation().map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+        #expect(!dump.contains("secret-access"))
+        #expect(!dump.contains("secret-refresh"))
+        #expect(!dump.contains("refresh-1"))
+    }
+}

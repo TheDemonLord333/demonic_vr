@@ -115,7 +115,9 @@ final class AppModel {
         self.calibration = CalibrationStore(defaults: defaults)
         self.snapshot = SnapshotEngine(player: player)
         self.reference = ReferenceScene()
-        self.google = GoogleAccountSession(config: GoogleOAuthConfig.load())
+        // UI-Tests berühren die Keychain nicht.
+        let credentialStore: GoogleCredentialStore = environment.isUITest ? InMemoryCredentialStore() : KeychainCredentialStore()
+        self.google = GoogleAccountSession(config: GoogleOAuthConfig.load(), store: credentialStore, defaults: defaults)
     }
 
     var isInCardboard: Bool {
