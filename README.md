@@ -383,26 +383,101 @@ auf beiden Seiten sichtbar.
   YouTube. Mögliche Gründe sind die Art der Wiedergabe (MSE/Streaming statt
   Datei), die Seitenstruktur oder ein Schutz. Belegt ist keiner davon.
 
-### Optionale Playlist-Ansicht
+### Optionale Playlist-Ansicht und Google-Anmeldung
 
 Die Playlist-Ansicht nutzt den offiziellen Google-OAuth-2.0-Ablauf für native
-Apps (Autorisierungscode mit PKCE) über `ASWebAuthenticationSession`, ganz
-getrennt von der WebView-Sitzung. Dazu kommt die YouTube Data API v3
-(`playlists?mine=true`, `playlistItems`). Tokens liegen nur im Arbeitsspeicher.
+Apps: Autorisierungscode mit PKCE (S256) über `ASWebAuthenticationSession`.
+Die Anmeldung ist vollständig getrennt von der YouTube-Sitzung in der WebView.
+Abgefragt wird die YouTube Data API v3 (`playlists?mine=true`,
+`playlistItems`), nur mit dem lesenden Bereich `youtube.readonly`.
 
-Einrichtung:
+**Anmeldung bleibt erhalten:**
 
-1. In der Google Cloud Console die **YouTube Data API v3** aktivieren.
-2. Einen OAuth-Zustimmungsbildschirm anlegen (Scope `youtube.readonly`).
-3. Eine **OAuth-Client-ID vom Typ „iOS“** für die Bundle-ID
-   `me.thedemonlord333.Demonic-VR` anlegen.
-4. `Config/GoogleOAuth.example.plist` nach `Demonic VR/GoogleOAuth.plist`
-   kopieren und `CLIENT_ID` eintragen. Die Datei steht in `.gitignore` und
-   **darf nicht committet werden**. Als Redirect dient die umgekehrte
-   Client-ID (`com.googleusercontent.apps.…:/oauth2redirect`).
+- Refresh-Token, Zugangstoken, Ablaufzeit und Client-ID liegen in der
+  **iOS-Keychain**: `kSecClassGenericPassword`, Dienst
+  `me.thedemonlord333.Demonic-VR.google-oauth`, zugänglich nach der ersten
+  Entsperrung und nur auf diesem Gerät, also nicht in Backups auf anderen
+  Geräten.
+- Tokens landen **nie** in UserDefaults, unverschlüsselten Dateien, Logs oder
+  Diagnoseberichten. In UserDefaults steht nur ein Merker ohne Geheimnis:
+  ob beim nächsten Login einmal die Zustimmung erneut abgefragt werden soll.
+- Beim App-Start wird die gespeicherte Sitzung geladen. Ein abgelaufenes oder
+  bald ablaufendes Zugangstoken (Puffer 60 s) wird sofort erneuert.
+- Wechselt die Client-ID in `GoogleOAuth.plist`, wird die alte Anmeldung
+  verworfen.
 
-Ohne diese Datei zeigt die Playlist-Ansicht nur die Anleitung, der Rest der App
-funktioniert normal.
+**Automatische Erneuerung:**
+
+- Vor jeder API-Abfrage wird das Zugangstoken geprüft und bei Bedarf über
+  `grant_type=refresh_token` erneuert. Ein Client-Secret wird dabei nicht
+  gesendet, weil iOS-Clients öffentliche Clients sind.
+- Parallele Abfragen teilen sich **eine** Erneuerung.
+- Enthält die Antwort keinen neuen Refresh-Token, bleibt der vorhandene
+  erhalten.
+- Offline-Zugriff: iOS-Clients erhalten den Refresh-Token beim Code-Austausch.
+  `access_type=offline` ist ein Parameter für Webserver-Apps und wird nicht
+  gesendet. Eine erneute Zustimmung (`prompt=consent`) wird **nur** angefordert,
+  wenn Google beim letzten Login keinen Refresh-Token geliefert hat, also
+  einmalig, nicht bei jedem Login.
+- Eine ältere Anmeldung ohne Refresh-Token bleibt nutzbar, bis ihr Zugangstoken
+  abläuft. Danach bittet die App um eine neue Anmeldung.
+
+**Fehler:**
+
+- *Netzwerkprobleme* (offline, Zeitüberschreitung, HTTP 5xx/429): Die
+  Anmeldung bleibt gespeichert, und die App zeigt „Keine Verbindung zu Google
+  …“.
+- *Widerruf oder Ablauf* (`invalid_grant`, etwa nach 7 Tagen im Testmodus oder
+  nach Entzug unter myaccount.google.com): Die Sitzung wird bereinigt, und die
+  App bietet eine neue Anmeldung an.
+- *HTTP 401 von der YouTube API:* Die App erneuert das Token und wiederholt die
+  Abfrage **höchstens einmal**. Kommt erneut 401, gibt es einen Hinweis, aber
+  keine weitere Schleife.
+
+**Abmelden:**
+
+- Die Tokens werden sofort aus Keychain und Arbeitsspeicher gelöscht. Das
+  funktioniert auch ohne Internet.
+- Danach versucht die App, den Zugriff bei Google zu widerrufen (`POST
+  https://oauth2.googleapis.com/revoke`).
+- Eine noch laufende Erneuerung wird verworfen (Generationszähler) und kann die
+  Sitzung nicht wiederherstellen.
+- Die YouTube-Sitzung der WebView bleibt davon unberührt.
+
+**Einrichtung in der Google Cloud Console:**
+
+1. Ein Projekt anlegen oder auswählen und unter *APIs & Dienste →
+   Bibliothek* die **YouTube Data API v3** aktivieren.
+2. Unter *Google Auth Platform* (früher „OAuth-Zustimmungsbildschirm“) die
+   *Branding*-Angaben ausfüllen: App-Name, Support-E-Mail, Kontakt.
+3. *Zielgruppe:* „Extern“. Solange der Status **„Testen“** ist:
+   - Nur eingetragene **Testnutzer** können sich anmelden, höchstens 100. Das
+     eigene Google-Konto muss also als Testnutzer eingetragen sein.
+   - Refresh-Tokens laufen nach **7 Tagen** ab. Danach meldet die App „Bitte
+     neu anmelden“; das ist im Testmodus erwartet.
+   - Unbestätigte Apps zeigen beim Login einen Warnhinweis („Google hat diese
+     App nicht überprüft“). Fortfahren ist für Testnutzer möglich.
+4. *Datenzugriff:* den Bereich
+   `https://www.googleapis.com/auth/youtube.readonly` hinzufügen.
+5. *Clients → Client erstellen → Anwendungstyp „iOS“* mit der Bundle-ID
+   `me.thedemonlord333.Demonic-VR`. Ein Client-Secret wird weder erzeugt noch
+   gebraucht. Nichts davon in die App oder ins Repository legen.
+6. `Config/GoogleOAuth.example.plist` nach `Demonic VR/GoogleOAuth.plist`
+   kopieren und bei `CLIENT_ID` die Client-ID eintragen
+   (`….apps.googleusercontent.com`).
+   - Die Datei steht in `.gitignore` und **darf nicht committet werden**.
+   - Weil `Demonic VR/` eine synchronisierte Xcode-Gruppe ist, nimmt das
+     App-Target die Datei automatisch als Ressource auf.
+7. Rücksprung in die App: Als Redirect dient automatisch die umgekehrte
+   Client-ID (`com.googleusercontent.apps.<ID>:/oauth2redirect`).
+   `ASWebAuthenticationSession` fängt den Rücksprung selbst ab, ein
+   URL-Typ-Eintrag in der Info.plist ist nicht nötig.
+8. Für Dauerbetrieb ohne 7-Tage-Ablauf den Status auf „In Produktion“ setzen.
+   Für den sensiblen Bereich `youtube.readonly` kann Google eine Überprüfung
+   verlangen; ohne sie bleibt es bei Warnhinweis und Nutzerlimit.
+
+Ohne `GoogleOAuth.plist` zeigt die Playlist-Ansicht nur die Anleitung, der Rest
+der App funktioniert normal.
 
 ## Tests
 
@@ -419,7 +494,10 @@ xcodebuild test -project "Demonic VR.xcodeproj" -scheme "Demonic VR" \
   (Symmetrie, Seitenverhältnis, Abstand, vertikale Position), Letterbox,
   Ausschnitt, Speichern/Laden/Zurücksetzen der Kalibrierung, Erkennung neuer,
   wiederholter und schwarzer Frames, Statistik, Freigabe-Logik, Quellenregeln,
-  Referenzszene, PKCE und OAuth-Redirect sowie die Begrenzung des
+  Referenzszene, PKCE und OAuth-Redirect, Google-Anmeldung (Wiederherstellung,
+  Erneuerung, parallele Abfragen, fehlender Refresh-Token, Netzwerkfehler,
+  Widerruf, 401-Wiederholung, Abmelden während einer Erneuerung,
+  `GoogleSessionTests`) sowie die Begrenzung des
   Spiegel-Modus: echte Ebene und replizierte Kopie bleiben bei allen
   Grenzwerten in ihrer Augenhälfte (`MirrorClippingRegressionTests`).
   Außerdem Spiegel-Anordnungen (Original links/rechts, ohne Replikat),
